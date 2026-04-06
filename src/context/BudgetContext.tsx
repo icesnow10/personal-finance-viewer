@@ -18,10 +18,44 @@ export const BudgetContext = createContext<BudgetContextValue>({
 });
 
 export function flattenTransactions(data: BudgetData): FlatTransaction[] {
+  if (Array.isArray(data.transactions) && data.transactions.length > 0) {
+    return data.transactions.map((tx, index) => ({
+      id: tx.id || `tx-${index}`,
+      date: tx.date || "",
+      description: tx.description,
+      amount: tx.amount,
+      source: tx.source,
+      holder: tx.holder,
+      bank: tx.bank,
+      account_number: tx.account_number,
+      bucket: tx.bucket ?? undefined,
+      pluggy_item_id: tx.pluggy_item_id ?? undefined,
+      pluggy_id: tx.pluggy_id ?? undefined,
+      category:
+        tx.type === "income"
+          ? "Income"
+          : tx.type === "skipped"
+            ? "Skipped"
+            : tx.type === "unclassified"
+              ? "Uncategorized"
+              : tx.category || "Uncategorized",
+      subcategory:
+        tx.type === "income"
+          ? tx.source || "Income"
+          : tx.type === "skipped"
+            ? tx.subcategory || "Internal Transfer"
+            : tx.type === "unclassified"
+              ? tx.subcategory || "Unknown"
+              : tx.subcategory || "Unknown",
+      type: tx.type,
+      ...(tx.provisional ? { provisional: true } : {}),
+    }));
+  }
+
   const result: FlatTransaction[] = [];
   let idx = 0;
 
-  for (const item of data.income.items) {
+  for (const item of data.income?.items ?? []) {
     const isProvisional = item.provisional ?? (item.details?.provisional === true);
     result.push({
       id: `tx-${idx++}`,
@@ -30,6 +64,8 @@ export function flattenTransactions(data: BudgetData): FlatTransaction[] {
       amount: item.amount,
       source: item.source,
       holder: item.holder,
+      bank: item.bank,
+      account_number: item.account_number,
       category: "Income",
       subcategory: item.source || "Income",
       type: "income",
@@ -37,9 +73,9 @@ export function flattenTransactions(data: BudgetData): FlatTransaction[] {
     });
   }
 
-  for (const [category, catData] of Object.entries(data.expenses.by_category)) {
-    for (const [subcategory, subData] of Object.entries(catData.subcategories)) {
-      for (const tx of subData.transactions) {
+  for (const [category, catData] of Object.entries(data.expenses?.by_category ?? {})) {
+    for (const [subcategory, subData] of Object.entries(catData?.subcategories ?? {})) {
+      for (const tx of subData?.transactions ?? []) {
         result.push({
           ...tx,
           id: `tx-${idx++}`,
@@ -73,6 +109,8 @@ export function flattenTransactions(data: BudgetData): FlatTransaction[] {
         description: entry.description,
         amount: entry.amount,
         holder: entry.holder,
+        bank: entry.bank,
+        account_number: entry.account_number,
         category: "Skipped",
         subcategory: "Internal Transfer",
         type: "skipped",

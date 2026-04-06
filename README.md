@@ -23,7 +23,7 @@ All monetary values can be redacted with the eye toggle in the header — useful
 
 ### 1. Generate budget data
 
-Use the [personal-finance](https://github.com/icesnow10/personal-finance) skills to fetch transactions and compile monthly budgets. The `/compile` skill produces JSON files in `resources/{YYYY-MM}/expenses/result/`.
+Use the [personal-finance](https://github.com/icesnow10/personal-finance) skills to fetch transactions and compile monthly budgets. The `/compile` skill produces categorized transaction JSON files in `resources/{YYYY-MM}/expenses/result/`. The viewer derives totals, net, and bucket progress itself, so those summary fields do not need to exist in the file.
 
 ### 2. Install and run the viewer
 

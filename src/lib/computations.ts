@@ -1,4 +1,166 @@
-import type { BudgetData, CategoryData } from "./types";
+import type { BucketData, BudgetData, CategoryData } from "./types";
+
+export interface BudgetSummary {
+  total_income: number;
+  total_expenses: number;
+  classified_expenses: number;
+  uncategorized_expenses: number;
+  net: number;
+  investment: number;
+  investment_pct: number;
+  investment_desired: number;
+  intentional_rdb_investments?: number;
+}
+
+export interface BudgetBuckets {
+  custos_fixos: BucketData;
+  conforto: BucketData;
+  liberdade_financeira: BucketData;
+}
+
+const DEFAULT_BUCKETS: BudgetBuckets = {
+  custos_fixos: {
+    target_pct: 30,
+    categories: ["Housing", "Health", "Insurance", "Groceries", "Transportation"],
+    actual_amount: 0,
+    actual_pct: 0,
+    delta_pp: 0,
+  },
+  conforto: {
+    target_pct: 25,
+    categories: [
+      "Wellness",
+      "Subscriptions",
+      "Personal Care",
+      "Services",
+      "Food/Dining",
+      "Recreation",
+      "Shopping",
+      "Travel",
+      "Family Support",
+      "Education",
+    ],
+    actual_amount: 0,
+    actual_pct: 0,
+    delta_pp: 0,
+  },
+  liberdade_financeira: {
+    target_pct: 45,
+    categories: ["Investment (Troco Turbo)", "Net"],
+    actual_amount: 0,
+    actual_pct: 0,
+    delta_pp: 0,
+  },
+};
+
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function roundPct(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+export function getBudgetSummary(data: BudgetData): BudgetSummary {
+  const totalIncome = roundMoney(
+    data.income?.total ??
+      (data.income?.items ?? []).reduce((sum, item) => sum + item.amount, 0)
+  );
+  const classifiedExpenses = roundMoney(
+    Object.values(data.expenses?.by_category ?? {}).reduce(
+      (sum, category) => sum + category.total,
+      0
+    )
+  );
+  const uncategorizedExpenses = roundMoney(
+    (data.expenses?.unclassified ?? []).reduce((sum, tx) => sum + tx.amount, 0)
+  );
+  const totalExpenses = roundMoney(classifiedExpenses + uncategorizedExpenses);
+  const net = roundMoney(totalIncome - totalExpenses);
+  const intentionalRdb = roundMoney(data.intentional_rdb_investments?.total ?? 0);
+
+  if (data.summary) {
+    return {
+      total_income: data.summary.total_income ?? totalIncome,
+      total_expenses: data.summary.total_expenses ?? totalExpenses,
+      classified_expenses: data.summary.classified_expenses ?? classifiedExpenses,
+      uncategorized_expenses:
+        data.summary.uncategorized_expenses ?? uncategorizedExpenses,
+      net: data.summary.net ?? net,
+      investment: data.summary.investment ?? net,
+      investment_pct:
+        data.summary.investment_pct ??
+        (totalIncome > 0 ? roundPct((net / totalIncome) * 100) : 0),
+      investment_desired:
+        data.summary.investment_desired ?? roundMoney(totalIncome * 0.45),
+      ...(intentionalRdb || data.summary.intentional_rdb_investments
+        ? {
+            intentional_rdb_investments:
+              data.summary.intentional_rdb_investments ?? intentionalRdb,
+          }
+        : {}),
+    };
+  }
+
+  return {
+    total_income: totalIncome,
+    total_expenses: totalExpenses,
+    classified_expenses: classifiedExpenses,
+    uncategorized_expenses: uncategorizedExpenses,
+    net,
+    investment: net,
+    investment_pct: totalIncome > 0 ? roundPct((net / totalIncome) * 100) : 0,
+    investment_desired: roundMoney(totalIncome * 0.45),
+    ...(intentionalRdb ? { intentional_rdb_investments: intentionalRdb } : {}),
+  };
+}
+
+export function getBudgetBuckets(data: BudgetData): BudgetBuckets {
+  const rawBuckets = data.budget_buckets;
+  if (!rawBuckets) {
+    return DEFAULT_BUCKETS;
+  }
+
+  if (Array.isArray(rawBuckets)) {
+    const mapped: BudgetBuckets = {
+      custos_fixos: { ...DEFAULT_BUCKETS.custos_fixos },
+      conforto: { ...DEFAULT_BUCKETS.conforto },
+      liberdade_financeira: { ...DEFAULT_BUCKETS.liberdade_financeira },
+    };
+
+    for (const bucket of rawBuckets as any[]) {
+      const key = String(bucket?.name ?? "")
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+      if (key in mapped) {
+        mapped[key as keyof BudgetBuckets] = {
+          ...mapped[key as keyof BudgetBuckets],
+          target_pct: bucket?.target_pct ?? mapped[key as keyof BudgetBuckets].target_pct,
+          categories: bucket?.categories ?? mapped[key as keyof BudgetBuckets].categories,
+          actual_amount:
+            bucket?.actual_amount ?? mapped[key as keyof BudgetBuckets].actual_amount,
+          actual_pct: bucket?.actual_pct ?? mapped[key as keyof BudgetBuckets].actual_pct,
+          delta_pp: bucket?.delta_pp ?? mapped[key as keyof BudgetBuckets].delta_pp,
+        };
+      }
+    }
+
+    return mapped;
+  }
+
+  return {
+    custos_fixos: { ...DEFAULT_BUCKETS.custos_fixos, ...rawBuckets.custos_fixos },
+    conforto: { ...DEFAULT_BUCKETS.conforto, ...rawBuckets.conforto },
+    liberdade_financeira: {
+      ...DEFAULT_BUCKETS.liberdade_financeira,
+      ...rawBuckets.liberdade_financeira,
+    },
+  };
+}
 
 export interface MonthlyTotal {
   month: string;
@@ -10,12 +172,15 @@ export interface MonthlyTotal {
 export function getMonthlyTotals(months: BudgetData[]): MonthlyTotal[] {
   return months
     .sort((a, b) => a.month.localeCompare(b.month))
-    .map((m) => ({
-      month: m.month,
-      income: m.summary.total_income,
-      expenses: m.summary.total_expenses,
-      net: m.summary.net,
-    }));
+    .map((m) => {
+      const summary = getBudgetSummary(m);
+      return {
+        month: m.month,
+        income: summary.total_income,
+        expenses: summary.total_expenses,
+        net: summary.net,
+      };
+    });
 }
 
 export interface CategoryTotal {
@@ -102,10 +267,12 @@ export function getSpendingPace(
     daysElapsed = daysInMonth;
   }
 
-  const totalSpent = data.summary.total_expenses;
+  const totalSpent = getBudgetSummary(data).total_expenses;
   const dailyAvg = daysElapsed > 0 ? totalSpent / daysElapsed : 0;
   const projectedTotal = dailyAvg * daysInMonth;
-  const previousMonthTotal = previousMonth?.summary.total_expenses ?? null;
+  const previousMonthTotal = previousMonth
+    ? getBudgetSummary(previousMonth).total_expenses
+    : null;
   const variationVsPrevious =
     previousMonthTotal != null && previousMonthTotal > 0
       ? ((totalSpent - previousMonthTotal) / previousMonthTotal) * 100
@@ -271,37 +438,41 @@ export interface BucketProgress {
 }
 
 export function getBucketProgress(data: BudgetData): BucketProgress[] {
-  const income = data.summary.total_income;
+  const summary = getBudgetSummary(data);
+  const income = summary.total_income;
   const cats = data.expenses.by_category;
 
   const sumCats = (names: string[]) =>
     Math.round(names.reduce((s, c) => s + (cats[c]?.total || 0), 0) * 100) / 100;
 
+  const rawBuckets = getBudgetBuckets(data);
   const buckets = [
-    { name: "Custos Fixos", key: "custos_fixos", data: data.budget_buckets.custos_fixos },
-    { name: "Conforto", key: "conforto", data: data.budget_buckets.conforto },
+    { name: "Custos Fixos", key: "custos_fixos", data: rawBuckets.custos_fixos },
+    { name: "Conforto", key: "conforto", data: rawBuckets.conforto },
     {
       name: "Liberdade Financeira",
       key: "liberdade_financeira",
-      data: data.budget_buckets.liberdade_financeira,
+      data: rawBuckets.liberdade_financeira,
     },
   ];
 
   return buckets.map((b) => {
-    const actualAmount = sumCats(b.data.categories);
+    const categories = b.data?.categories ?? [];
+    const targetPct = b.data?.target_pct ?? 0;
+    const actualAmount = sumCats(categories);
     const actualPct =
       income > 0 ? Math.round((actualAmount / income) * 10000) / 100 : 0;
-    const targetAmount = Math.round(income * b.data.target_pct) / 100;
+    const targetAmount = Math.round(income * targetPct) / 100;
 
     return {
       name: b.name,
       key: b.key,
-      targetPct: b.data.target_pct,
+      targetPct,
       actualPct,
       actualAmount,
       targetAmount,
-      delta: Math.round((actualPct - b.data.target_pct) * 100) / 100,
-      categories: b.data.categories,
+      delta: Math.round((actualPct - targetPct) * 100) / 100,
+      categories,
     };
   });
 }
