@@ -9,6 +9,7 @@ import {
   ResponsiveContainer, CartesianGrid, LabelList,
 } from "recharts";
 import { useBudget } from "@/hooks/useBudget";
+import { getBudgetBuckets, getBudgetSummary } from "@/lib/computations";
 
 const { Search } = Input;
 const { Text } = Typography;
@@ -126,20 +127,31 @@ export default function TreePage() {
 
     const skipped = (data.skipped ?? []).filter((e) => hs.has(e.holder));
     const net = incomeTotal - expensesTotal;
+    const baseSummary = getBudgetSummary(data);
 
     return {
       ...data,
       income: { total: incomeTotal, items: incomeItems },
       expenses: { ...data.expenses, total: expensesTotal, classified_total: classifiedTotal, uncategorized_total: uncTotal, by_category: byCategory, unclassified },
       skipped,
-      summary: { ...data.summary, total_income: incomeTotal, total_expenses: expensesTotal, classified_expenses: classifiedTotal, uncategorized_expenses: uncTotal, net },
+      summary: {
+        ...baseSummary,
+        total_income: incomeTotal,
+        total_expenses: expensesTotal,
+        classified_expenses: classifiedTotal,
+        uncategorized_expenses: uncTotal,
+        net,
+        investment: net,
+        investment_pct: incomeTotal > 0 ? Math.round((net / incomeTotal) * 10000) / 100 : 0,
+        investment_desired: Math.round(incomeTotal * 0.45 * 100) / 100,
+      },
     };
   }, [data, selectedHolders]);
 
   const bucketData = useMemo(() => {
     if (!filteredData) return [];
-    const b = filteredData.budget_buckets;
-    const income = filteredData.summary.total_income;
+    const b = getBudgetBuckets(filteredData);
+    const income = getBudgetSummary(filteredData).total_income;
     const cats = filteredData.expenses.by_category;
 
     const sumCats = (names: string[]) =>
@@ -161,6 +173,7 @@ export default function TreePage() {
   const { treeData, allKeys } = useMemo(() => {
     const d = filteredData;
     if (!d) return { treeData: [], allKeys: [] as string[] };
+    const summary = getBudgetSummary(d);
     const keys: string[] = [];
     const amt = showAmounts;
     const fmt = (v: number) => redacted ? REDACTED : formatBRL(v);
@@ -251,9 +264,9 @@ export default function TreePage() {
     };
 
     const buckets = [
-      { key: "bucket-custos", label: "Custos Fixos (Essencial)", data: d.budget_buckets.custos_fixos },
-      { key: "bucket-conforto", label: "Conforto (Estilo de vida)", data: d.budget_buckets.conforto },
-      { key: "bucket-liberdade", label: "Liberdade Financeira", data: d.budget_buckets.liberdade_financeira },
+      { key: "bucket-custos", label: "Custos Fixos (Essencial)", data: getBudgetBuckets(d).custos_fixos },
+      { key: "bucket-conforto", label: "Conforto (Estilo de vida)", data: getBudgetBuckets(d).conforto },
+      { key: "bucket-liberdade", label: "Liberdade Financeira", data: getBudgetBuckets(d).liberdade_financeira },
     ];
 
     const categorizedInBuckets = new Set(buckets.flatMap((b) => b.data.categories));
@@ -261,7 +274,7 @@ export default function TreePage() {
     const bucketNodes: DataNode[] = buckets.map((bucket) => {
       const bKey = bucket.key;
       keys.push(bKey);
-      const desiredAmount = Math.round(d.summary.total_income * bucket.data.target_pct) / 100;
+      const desiredAmount = Math.round(summary.total_income * bucket.data.target_pct) / 100;
 
       const matchingCategories = bucket.data.categories
         .filter((catName) => d.expenses.by_category[catName]);
@@ -270,8 +283,8 @@ export default function TreePage() {
         (sum, catName) => sum + (d.expenses.by_category[catName]?.total || 0), 0
       );
       const actualAmount = Math.round(sumFromCategories * 100) / 100;
-      const actualPct = d.summary.total_income > 0
-        ? Math.round((actualAmount / d.summary.total_income) * 10000) / 100
+      const actualPct = summary.total_income > 0
+        ? Math.round((actualAmount / summary.total_income) * 10000) / 100
         : 0;
 
       const catChildren = matchingCategories
@@ -437,6 +450,8 @@ export default function TreePage() {
     return <Empty description="Import a budget JSON file to view the tree" />;
   }
 
+  const filteredSummary = getBudgetSummary(filteredData!);
+
   return (
     <div>
       <Card size="small" style={{ marginBottom: 12 }} styles={{ body: { padding: "8px 16px" } }}>
@@ -467,24 +482,24 @@ export default function TreePage() {
       <Row gutter={16} style={{ marginBottom: 16 }}>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="Total Income" value={redacted ? 0 : filteredData!.summary.total_income} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ color: "#52c41a", fontSize: 18 }} />
+            <Statistic title="Total Income" value={redacted ? 0 : filteredSummary.total_income} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ color: "#52c41a", fontSize: 18 }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="Total Expenses" value={redacted ? 0 : filteredData!.summary.total_expenses} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ color: "#ff4d4f", fontSize: 18 }} />
+            <Statistic title="Total Expenses" value={redacted ? 0 : filteredSummary.total_expenses} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ color: "#ff4d4f", fontSize: 18 }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="Net" value={redacted ? 0 : filteredData!.summary.net} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ color: filteredData!.summary.net >= 0 ? "#52c41a" : "#ff4d4f", fontSize: 18 }} />
+            <Statistic title="Net" value={redacted ? 0 : filteredSummary.net} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ color: filteredSummary.net >= 0 ? "#52c41a" : "#ff4d4f", fontSize: 18 }} />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
             <Space direction="vertical" size={0}>
-              <Statistic title="Investment" value={redacted ? 0 : filteredData!.summary.investment} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ fontSize: 18 }} />
-              <Text type="secondary" style={{ fontSize: 11 }}>desired: {redacted ? REDACTED : formatBRL(filteredData!.summary.investment_desired)}</Text>
+              <Statistic title="Investment" value={redacted ? 0 : filteredSummary.investment} precision={2} prefix={redacted ? "" : "R$"} formatter={(v) => redacted ? REDACTED : `R$ ${Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2 })}`} valueStyle={{ fontSize: 18 }} />
+              <Text type="secondary" style={{ fontSize: 11 }}>desired: {redacted ? REDACTED : formatBRL(filteredSummary.investment_desired)}</Text>
             </Space>
           </Card>
         </Col>

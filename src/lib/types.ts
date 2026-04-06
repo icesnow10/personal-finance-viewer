@@ -3,6 +3,7 @@ export interface BudgetData {
   partial?: boolean;
   data_through?: string;
   currency: string;
+  transactions?: BudgetTransaction[];
   income: {
     total: number;
     items: IncomeItem[];
@@ -12,7 +13,7 @@ export interface BudgetData {
     total: number;
     entries: { date: string; amount: number; holder: string }[];
   };
-  skipped?: { description: string; date: string; amount: number; holder: string }[];
+  skipped?: { description: string; date: string; amount: number; holder: string; bank?: string; account_number?: string }[];
   expenses: {
     total: number;
     classified_total: number;
@@ -20,7 +21,7 @@ export interface BudgetData {
     by_category: Record<string, CategoryData>;
     unclassified: Transaction[];
   };
-  summary: {
+  summary?: {
     total_income: number;
     total_expenses: number;
     classified_expenses: number;
@@ -31,12 +32,12 @@ export interface BudgetData {
     investment_desired: number;
     intentional_rdb_investments?: number;
   };
-  budget_buckets: {
+  budget_buckets?: {
     custos_fixos: BucketData;
     conforto: BucketData;
     liberdade_financeira: BucketData;
   };
-  notes: string[];
+  notes?: string[];
 }
 
 export interface IncomeItem {
@@ -45,6 +46,8 @@ export interface IncomeItem {
   date: string | null;
   source: string;
   holder: string;
+  bank?: string;
+  account_number?: string;
   provisional?: boolean;
   details?: Record<string, unknown>;
 }
@@ -61,15 +64,29 @@ export interface SubcategoryData {
 }
 
 export interface Transaction {
-  date: string;
+  id?: string;
+  date: string | null;
   description: string;
   amount: number;
-  source?: string;
+  source?: string | null;
   holder: string;
+  bank?: string | null;
+  account_number?: string | null;
+  bucket?: string | null;
+  pluggy_item_id?: string | null;
+  pluggy_id?: string | null;
   guess?: string;
-  category?: string;
-  subcategory?: string;
+  category?: string | null;
+  subcategory?: string | null;
   provisional?: boolean;
+}
+
+export interface BudgetTransaction extends Transaction {
+  id: string;
+  type: TransactionType;
+  date: string | null;
+  category: string | null;
+  subcategory: string | null;
 }
 
 export interface BucketData {

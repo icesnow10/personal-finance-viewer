@@ -1,37 +1,53 @@
 import React, { useMemo, useState, useCallback } from "react";
 import {
-  Card, Typography, Space, Tag, Input, Select, Table, Row, Col,
+  Card, Typography, Space, Tag, Input, InputNumber, Table, Row, Col,
   Segmented, theme, Button, Modal,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Search, X, Filter, Download, RefreshCw, Eye, EyeOff } from "lucide-react";
+import { Search, Download, RefreshCw, Eye, EyeOff, XCircle } from "lucide-react";
 import { useBudget } from "@/hooks/useBudget";
 import { flattenTransactions } from "@/context/BudgetContext";
 import { MonthSelector } from "@/components/shared/MonthSelector";
 import { StatCard } from "@/components/shared/StatCard";
 import { EmptyState } from "@/components/shared/EmptyState";
-import { formatBRL, formatMonth, REDACTED } from "@/lib/formatters";
+import { formatBRL, REDACTED } from "@/lib/formatters";
 import { useRedact } from "@/context/RedactContext";
-import { getCategoryMeta, HOLDER_COLORS, TYPE_COLORS } from "@/lib/category-meta";
+import { getCategoryMeta, TYPE_COLORS } from "@/lib/category-meta";
+import { getBudgetSummary } from "@/lib/computations";
 import type { FlatTransaction } from "@/lib/types";
 
 const { Text, Title } = Typography;
 
-type ViewMode = "all" | "income" | "expense" | "unclassified";
+type ViewMode = "all" | "income" | "expense" | "unclassified" | "skipped";
 type ProvisionalFilter = "all" | "only" | "exclude";
+
+const DEFAULT_VIEW: ViewMode = "all";
+const DEFAULT_PROVISIONAL: ProvisionalFilter = "all";
 
 export default function TransactionsV2Page() {
   const { data: activeData, allMonths, loading, refresh } = useBudget();
   const { redacted, toggle: toggleRedact } = useRedact();
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [viewMode, setViewMode] = useState<ViewMode>("all");
-  const [provisionalFilter, setProvisionalFilter] = useState<ProvisionalFilter>("all");
+  const [viewMode, setViewMode] = useState<ViewMode>(DEFAULT_VIEW);
+  const [provisionalFilter, setProvisionalFilter] = useState<ProvisionalFilter>(DEFAULT_PROVISIONAL);
+  const [amountMin, setAmountMin] = useState<number | null>(null);
+  const [amountMax, setAmountMax] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const { token } = theme.useToken();
 
+  const hasActiveFilters = search !== "" || viewMode !== DEFAULT_VIEW || provisionalFilter !== DEFAULT_PROVISIONAL || amountMin !== null || amountMax !== null;
+
+  const clearFilters = () => {
+    setSearch("");
+    setViewMode(DEFAULT_VIEW);
+    setProvisionalFilter(DEFAULT_PROVISIONAL);
+    setAmountMin(null);
+    setAmountMax(null);
+  };
+
   const monthPills = useMemo(
-    () => allMonths.map((m) => ({ month: m.month, net: m.summary.net })),
+    () => allMonths.map((m) => ({ month: m.month, net: getBudgetSummary(m).net })),
     [allMonths]
   );
 
@@ -67,30 +83,39 @@ export default function TransactionsV2Page() {
           t.description.toLowerCase().includes(term) ||
           t.category.toLowerCase().includes(term) ||
           t.subcategory.toLowerCase().includes(term) ||
-          (t.holder || "").toLowerCase().includes(term)
+          (t.holder || "").toLowerCase().includes(term) ||
+          (t.bank || "").toLowerCase().includes(term)
       );
     }
 
+    if (amountMin !== null) {
+      result = result.filter((t) => Math.abs(t.amount) >= amountMin);
+    }
+    if (amountMax !== null) {
+      result = result.filter((t) => Math.abs(t.amount) <= amountMax);
+    }
+
     return result;
-  }, [flatTx, viewMode, provisionalFilter, search]);
+  }, [flatTx, viewMode, provisionalFilter, search, amountMin, amountMax]);
 
   const stats = useMemo(() => {
     if (!data) return { income: 0, expenses: 0, net: 0, count: 0 };
+    const summary = getBudgetSummary(data);
     return {
-      income: data.summary.total_income,
-      expenses: data.summary.total_expenses,
-      net: data.summary.net,
+      income: summary.total_income,
+      expenses: summary.total_expenses,
+      net: summary.net,
       count: filtered.length,
     };
   }, [data, filtered]);
 
   const handleExport = useCallback(() => {
     if (!filtered.length) return;
-    const headers = ["Date", "Description", "Amount", "Category", "Subcategory", "Holder", "Type"];
+    const headers = ["Date", "Description", "Amount", "Category", "Subcategory", "Bank", "Account", "Holder", "Type"];
     const csv = [
       headers.join(","),
       ...filtered.map((t) =>
-        [t.date, `"${t.description}"`, t.amount, t.category, t.subcategory, t.holder, t.type].join(",")
+        [t.date, `"${t.description}"`, t.amount, t.category, t.subcategory, t.bank || "", t.account_number || "", t.holder, t.type].join(",")
       ),
     ].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
@@ -108,16 +133,12 @@ export default function TransactionsV2Page() {
         title: "Data",
         dataIndex: "date",
         key: "date",
-        width: 100,
-        sorter: (a, b) => a.date.localeCompare(b.date),
+        width: 110,
+        sorter: (a, b) => (a.date ?? "").localeCompare(b.date ?? ""),
+        defaultSortOrder: "descend",
         render: (d: string) => {
           if (!d) return <Text type="secondary">--</Text>;
-          const parts = d.split("-");
-          return (
-            <Text style={{ fontSize: 13 }}>
-              {parts[2]}/{parts[1]}
-            </Text>
-          );
+          return <Text style={{ fontSize: 13 }}>{d}</Text>;
         },
       },
       {
@@ -149,17 +170,61 @@ export default function TransactionsV2Page() {
         },
       },
       {
+        title: "Banco",
+        dataIndex: "bank",
+        key: "bank",
+        width: 100,
+        filters: Array.from(new Set(flatTx.map((t) => t.bank).filter(Boolean))).map((b) => ({
+          text: b!,
+          value: b!,
+        })),
+        sorter: (a, b) => (a.bank || "").localeCompare(b.bank || ""),
+        onFilter: (value, record) => record.bank === value,
+        render: (b: string) => {
+          if (!b) return null;
+          const BANK_COLORS = ["blue", "green", "volcano", "purple", "cyan", "magenta", "gold", "geekblue", "orange"];
+          const idx = Array.from(new Set(flatTx.map((t) => t.bank).filter(Boolean))).indexOf(b);
+          const color = BANK_COLORS[idx % BANK_COLORS.length];
+          return <Tag color={color} style={{ fontSize: 11 }}>{b}</Tag>;
+        },
+      },
+      {
+        title: "Conta",
+        dataIndex: "account_number",
+        key: "account_number",
+        width: 100,
+        sorter: (a, b) => (a.account_number || "").localeCompare(b.account_number || ""),
+        filters: Array.from(new Set(flatTx.map((t) => t.account_number).filter(Boolean))).map((n) => ({
+          text: n!,
+          value: n!,
+        })),
+        onFilter: (value, record) => record.account_number === value,
+        render: (n: string) => {
+          if (!n) return null;
+          const ACCOUNT_COLORS = ["gold", "lime", "cyan", "purple", "magenta", "volcano", "geekblue", "orange", "green"];
+          const idx = Array.from(new Set(flatTx.map((t) => t.account_number).filter(Boolean))).indexOf(n);
+          const color = ACCOUNT_COLORS[idx % ACCOUNT_COLORS.length];
+          return <Tag color={color} style={{ fontSize: 11 }}>{n}</Tag>;
+        },
+      },
+      {
         title: "Titular",
         dataIndex: "holder",
         key: "holder",
-        width: 90,
+        width: 110,
         filters: Array.from(new Set(flatTx.map((t) => t.holder).filter(Boolean))).map((h) => ({
           text: h,
           value: h,
         })),
+        sorter: (a, b) => (a.holder || "").localeCompare(b.holder || ""),
         onFilter: (value, record) => record.holder === value,
-        render: (h: string) =>
-          h ? <Tag color={HOLDER_COLORS[h] || "default"} style={{ fontSize: 11 }}>{h}</Tag> : null,
+        render: (h: string) => {
+          if (!h) return null;
+          const HOLDER_COLORS = ["magenta", "volcano", "orange", "gold", "green", "cyan", "blue", "geekblue", "purple"];
+          const idx = Array.from(new Set(flatTx.map((t) => t.holder).filter(Boolean))).indexOf(h);
+          const color = HOLDER_COLORS[idx % HOLDER_COLORS.length];
+          return <Tag color={color} style={{ fontSize: 11 }}>{h}</Tag>;
+        },
       },
       {
         title: "Valor",
@@ -168,7 +233,6 @@ export default function TransactionsV2Page() {
         width: 130,
         align: "right",
         sorter: (a, b) => a.amount - b.amount,
-        defaultSortOrder: "descend",
         render: (v: number, record: FlatTransaction) => {
           const isIncome = record.type === "income";
           return (
@@ -189,6 +253,12 @@ export default function TransactionsV2Page() {
         dataIndex: "type",
         key: "type",
         width: 90,
+        sorter: (a, b) => a.type.localeCompare(b.type),
+        filters: Array.from(new Set(flatTx.map((t) => t.type))).map((t) => ({
+          text: t.charAt(0).toUpperCase() + t.slice(1),
+          value: t,
+        })),
+        onFilter: (value, record) => record.type === value,
         render: (t: string) => (
           <Tag
             color={TYPE_COLORS[t] || "default"}
@@ -199,7 +269,7 @@ export default function TransactionsV2Page() {
         ),
       },
     ],
-    [flatTx]
+    [flatTx, redacted]
   );
 
   const handleRefresh = async () => {
@@ -271,19 +341,49 @@ export default function TransactionsV2Page() {
               { label: "Receitas", value: "income" },
               { label: "Despesas", value: "expense" },
               { label: "Sem Categoria", value: "unclassified" },
+              { label: "Ignoradas", value: "skipped" },
             ]}
           />
-          <Select
+          <Segmented
             value={provisionalFilter}
-            onChange={(v) => setProvisionalFilter(v)}
-            size="small"
-            style={{ width: 160 }}
+            onChange={(v) => setProvisionalFilter(v as ProvisionalFilter)}
             options={[
-              { label: "Provisionados: Todos", value: "all" },
-              { label: "Apenas provisionados", value: "only" },
-              { label: "Excluir provisionados", value: "exclude" },
+              { label: "Todas", value: "all" },
+              { label: "Provisionados", value: "only" },
+              { label: "Sem Provisao", value: "exclude" },
             ]}
           />
+          <Space size={4} style={{ alignItems: "center" }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>R$</Text>
+            <InputNumber
+              placeholder="Min"
+              value={amountMin}
+              onChange={(v) => setAmountMin(v)}
+              min={0}
+              style={{ width: 90 }}
+              size="small"
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>—</Text>
+            <InputNumber
+              placeholder="Max"
+              value={amountMax}
+              onChange={(v) => setAmountMax(v)}
+              min={0}
+              style={{ width: 90 }}
+              size="small"
+            />
+          </Space>
+          {hasActiveFilters && (
+            <Button
+              type="text"
+              size="small"
+              icon={<XCircle size={14} />}
+              onClick={clearFilters}
+              style={{ color: token.colorTextSecondary }}
+            >
+              Limpar filtros
+            </Button>
+          )}
           <Text type="secondary" style={{ fontSize: 12, marginLeft: "auto" }}>
             {filtered.length} transacoes
           </Text>

@@ -12,7 +12,7 @@ import { PercentChange } from "@/components/shared/PercentChange";
 import { EmptyState } from "@/components/shared/EmptyState";
 import {
   getSpendingPace, getDailySpendingCurve, getCategoryComparison,
-  getBucketProgress,
+  getBucketProgress, getBudgetBuckets, getBudgetSummary,
 } from "@/lib/computations";
 import { formatBRL, formatPercent, formatCompact, REDACTED } from "@/lib/formatters";
 import { useRedact } from "@/context/RedactContext";
@@ -385,10 +385,11 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
   const { token } = theme.useToken();
   const { redacted } = useRedact();
   const r = (v: number) => redacted ? REDACTED : formatBRL(v);
-  const income = data.summary.total_income;
-  const expenses = data.summary.total_expenses;
-  const net = data.summary.net;
-  const prevNet = previousData?.summary.net ?? null;
+  const summary = getBudgetSummary(data);
+  const income = summary.total_income;
+  const expenses = summary.total_expenses;
+  const net = summary.net;
+  const prevNet = previousData ? getBudgetSummary(previousData).net : null;
   const netVariation = prevNet != null && prevNet !== 0 ? ((net - prevNet) / Math.abs(prevNet)) * 100 : null;
 
   const barTotal = income + expenses;
@@ -443,7 +444,7 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
         </div>
         <div>
           <div style={{ fontSize: 11, color: "#8c8c8c", marginBottom: 2 }}>Excluido</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{r(data.summary.investment)}</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{r(summary.investment)}</div>
         </div>
       </div>
 
@@ -707,16 +708,20 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
   }, [previousData]);
 
   const bucketDefs = useMemo(() => {
-    const b = data.budget_buckets;
-    const cats = data.expenses.by_category;
+    const rawBuckets = getBudgetBuckets(data);
+    const cats = data.expenses?.by_category ?? {};
+    const custos = rawBuckets.custos_fixos;
+    const conforto = rawBuckets.conforto;
+    const liberdade = rawBuckets.liberdade_financeira;
+
     const allBucketCats = new Set([
-      ...b.custos_fixos.categories,
-      ...b.conforto.categories,
-      ...b.liberdade_financeira.categories,
+      ...(custos.categories ?? []),
+      ...(conforto.categories ?? []),
+      ...(liberdade.categories ?? []),
     ]);
 
-    const makeBucket = (name: string, key: string, bd: typeof b.custos_fixos, color: string) => {
-      const catEntries = bd.categories
+    const makeBucket = (name: string, key: string, bd: { categories: string[] }, color: string) => {
+      const catEntries = (bd.categories ?? [])
         .filter((c) => cats[c])
         .map((c) => ({ name: c, data: cats[c] }))
         .sort((a, b) => b.data.total - a.data.total);
@@ -725,9 +730,9 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
     };
 
     const buckets = [
-      makeBucket("Custos Fixos", "custos_fixos", b.custos_fixos, "#4096ff"),
-      makeBucket("Conforto", "conforto", b.conforto, "#fa8c16"),
-      makeBucket("Liberdade Financeira", "liberdade_financeira", b.liberdade_financeira, "#52c41a"),
+      makeBucket("Custos Fixos", "custos_fixos", custos, "#4096ff"),
+      makeBucket("Conforto", "conforto", conforto, "#fa8c16"),
+      makeBucket("Liberdade Financeira", "liberdade_financeira", liberdade, "#52c41a"),
     ];
 
     // Categories not in any bucket go into Conforto (catch-all)
@@ -735,10 +740,10 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
       .filter(([c]) => !allBucketCats.has(c))
       .map(([c, d]) => ({ name: c, data: d }));
     if (otherCats.length > 0) {
-      const conforto = buckets.find((b) => b.key === "conforto");
-      if (conforto) {
-        conforto.categories.push(...otherCats.sort((a, b) => b.data.total - a.data.total));
-        conforto.total += otherCats.reduce((s, c) => s + c.data.total, 0);
+      const confortoBucket = buckets.find((b) => b.key === "conforto");
+      if (confortoBucket) {
+        confortoBucket.categories.push(...otherCats.sort((a, b) => b.data.total - a.data.total));
+        confortoBucket.total += otherCats.reduce((s, c) => s + c.data.total, 0);
       }
     }
 
@@ -920,7 +925,7 @@ export default function OverviewPage() {
   const [refreshing, setRefreshing] = useState(false);
 
   const monthPills = useMemo(
-    () => allMonths.map((m) => ({ month: m.month, net: m.summary.net })),
+    () => allMonths.map((m) => ({ month: m.month, net: getBudgetSummary(m).net })),
     [allMonths]
   );
 

@@ -12,7 +12,7 @@ import { PercentChange } from "@/components/shared/PercentChange";
 import { MiniLineChart } from "@/components/shared/MiniLineChart";
 import { EmptyState } from "@/components/shared/EmptyState";
 import { SectionHeader } from "@/components/shared/SectionHeader";
-import { getIncomeByMonth } from "@/lib/computations";
+import { getBudgetSummary, getIncomeByMonth } from "@/lib/computations";
 import { formatBRL, formatMonthShort } from "@/lib/formatters";
 import { HOLDER_COLORS } from "@/lib/category-meta";
 import type { IncomeItem } from "@/lib/types";
@@ -24,7 +24,7 @@ export default function IncomePage() {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   const monthPills = useMemo(
-    () => allMonths.map((m) => ({ month: m.month, net: m.summary.net })),
+    () => allMonths.map((m) => ({ month: m.month, net: getBudgetSummary(m).net })),
     [allMonths]
   );
 

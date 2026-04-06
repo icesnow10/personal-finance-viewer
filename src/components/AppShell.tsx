@@ -4,6 +4,7 @@ import {
   LayoutDashboard,
   ArrowLeftRight,
   TrendingUp,
+  BarChart3,
   Wallet,
   Settings,
   Sun,
@@ -30,6 +31,11 @@ const menuItems = [
     key: "/income",
     icon: <TrendingUp size={18} />,
     label: "Receitas",
+  },
+  {
+    key: "/reports",
+    icon: <BarChart3 size={18} />,
+    label: "Relatorios",
   },
   { type: "divider" as const },
   {
