@@ -1,6 +1,7 @@
 import type { AppProps } from "next/app";
 import { ConfigProvider, theme } from "antd";
 import { BudgetProvider } from "@/context/BudgetContext";
+import { InvestmentProvider } from "@/context/InvestmentContext";
 import { ThemeProvider, useThemeMode } from "@/context/ThemeContext";
 import { RedactProvider } from "@/context/RedactContext";
 import { AppShell } from "@/components/AppShell";
@@ -24,9 +25,11 @@ function AppInner({ Component, pageProps }: AppProps) {
     >
       <RedactProvider>
         <BudgetProvider>
-          <AppShell>
-            <Component {...pageProps} />
-          </AppShell>
+          <InvestmentProvider>
+            <AppShell>
+              <Component {...pageProps} />
+            </AppShell>
+          </InvestmentProvider>
         </BudgetProvider>
       </RedactProvider>
     </ConfigProvider>

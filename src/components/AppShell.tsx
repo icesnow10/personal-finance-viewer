@@ -6,6 +6,7 @@ import {
   TrendingUp,
   BarChart3,
   Wallet,
+  PiggyBank,
   Settings,
   Sun,
   Moon,
@@ -23,7 +24,7 @@ const menuItems = [
     label: "Visao Geral",
   },
   {
-    key: "/transactions-v2",
+    key: "/transactions",
     icon: <ArrowLeftRight size={18} />,
     label: "Transacoes",
   },
@@ -31,6 +32,11 @@ const menuItems = [
     key: "/income",
     icon: <TrendingUp size={18} />,
     label: "Receitas",
+  },
+  {
+    key: "/investments",
+    icon: <PiggyBank size={18} />,
+    label: "Investimentos",
   },
   {
     key: "/reports",
