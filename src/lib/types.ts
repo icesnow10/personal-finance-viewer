@@ -79,6 +79,8 @@ export interface Transaction {
   category?: string | null;
   subcategory?: string | null;
   provisional?: boolean;
+  totalInstallments?: number;
+  installmentNumber?: number;
 }
 
 export interface BudgetTransaction extends Transaction {

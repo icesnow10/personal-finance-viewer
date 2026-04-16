@@ -128,7 +128,7 @@ function normalizeBudget(raw: unknown, meta: BudgetFileMeta): JsonRecord {
     };
 
     for (const tx of transactions) {
-      const baseTx = {
+      const baseTx: Record<string, unknown> = {
         id: tx.id,
         ...(tx.date ? { date: tx.date } : {}),
         description: tx.description,
@@ -142,6 +142,10 @@ function normalizeBudget(raw: unknown, meta: BudgetFileMeta): JsonRecord {
         subcategory: tx.subcategory ?? null,
         provisional: Boolean(tx.provisional),
       };
+      if (tx.totalInstallments) {
+        baseTx.totalInstallments = tx.totalInstallments;
+        baseTx.installmentNumber = tx.installmentNumber;
+      }
 
       if (tx.type === "income") {
         incomeItems.push(baseTx);

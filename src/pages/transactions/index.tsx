@@ -170,6 +170,18 @@ export default function TransactionsV2Page() {
         },
       },
       {
+        title: "ID",
+        dataIndex: "id",
+        key: "id",
+        width: 280,
+        sorter: (a, b) => (a.id || "").localeCompare(b.id || ""),
+        render: (id: string) => (
+          <Text copyable={{ text: id }} style={{ fontSize: 11, color: "#8c8c8c" }}>
+            {id}
+          </Text>
+        ),
+      },
+      {
         title: "Banco",
         dataIndex: "bank",
         key: "bank",
