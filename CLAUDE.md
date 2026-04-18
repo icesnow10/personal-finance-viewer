@@ -75,6 +75,21 @@ Pure functions over `BudgetData` used by pages:
 | `/income` | `src/pages/income/index.tsx` | Income breakdown by month and source |
 | `/settings` | `src/pages/settings/index.tsx` | Resources path configuration (writes `.config.json`) |
 
+### Prompt shortcuts (top-bar modal)
+
+Terminal icon in the header opens `PromptShortcutModal` (`src/components/PromptShortcutModal.tsx`), which has two tabs:
+
+**Presets** — fire-and-forget terminal. Clicking **Executar** hits `POST /api/run-shortcut` (thin wrapper around `runShortcut()` in `src/lib/runShortcut.ts`), which:
+1. Reads `.config.json` `resourcesPath` and derives the plugin directory as everything before `/resources` (e.g. `.../personal-finance/resources/trevo` → `.../personal-finance`).
+2. Writes a temp `.ps1` that `Set-Location`s to the plugin dir and runs `claude "<prompt>"` (interactive mode, TUI visible).
+3. Spawns `cmd /c start "" powershell -NoExit -File <script>` — the window stays open for interaction after claude exits.
+
+**Agendados** — cron-scheduled runs via `node-cron` (`src/lib/scheduler.ts`). Schedules persist to `.pfv-schedules.json` (gitignored) and are re-registered on every server start. Timezone: America/Sao_Paulo.
+
+CRUD via `/api/schedules`: `GET` (list), `POST` (create), `PUT` (update), `DELETE` (remove), `PATCH` (run now). Each tick calls `runShortcut(prompt)` — same path as the manual preset, so each scheduled run pops a new PowerShell window. Cron only fires while the Next.js server is running.
+
+No session tracking or status reporting — agent lifecycle is handled elsewhere. Windows-only (returns error on other platforms).
+
 ### Budget bucket definitions
 
 The three buckets map categories as follows:

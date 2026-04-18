@@ -1,6 +1,7 @@
 # personal financial data — keep local only
 resources/
 .config.json
+.pfv-schedules.json
 generate_budgets.js
 
 # dependencies

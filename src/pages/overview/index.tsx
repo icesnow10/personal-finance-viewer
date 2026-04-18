@@ -63,7 +63,7 @@ function SectionHead({ title, linkText, href }: { title: string; linkText?: stri
 }
 
 /* ── Ritmo de Gastos (Visor style) ────────────────────────────── */
-function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousData: BudgetData | null }) {
+function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData; previousData: BudgetData | null; allMonths: BudgetData[] }) {
   const { token } = theme.useToken();
   const { redacted } = useRedact();
   const r = (v: number) => redacted ? REDACTED : formatBRL(v);
@@ -75,60 +75,55 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
   );
   const pace = useMemo(() => getSpendingPace(data, previousData), [data, previousData]);
 
+  // Average of last 3 months curve
+  const avg3Curve = useMemo(() => {
+    const prior = allMonths
+      .filter(m => m.month < data.month)
+      .sort((a, b) => b.month.localeCompare(a.month))
+      .slice(0, 3);
+    if (prior.length === 0) return null;
+    const curves = prior.map(m => getDailySpendingCurve(m));
+    const maxDays = Math.max(...curves.map(c => c.length));
+    const avg: { day: number; cumulative: number }[] = [];
+    for (let d = 0; d < maxDays; d++) {
+      const vals = curves.map(c => c[d]?.cumulative ?? c[c.length - 1]?.cumulative ?? 0);
+      avg.push({ day: d + 1, cumulative: Math.round(vals.reduce((s, v) => s + v, 0) / vals.length) });
+    }
+    return avg;
+  }, [data, allMonths]);
+
   const chartData = useMemo(() => {
     return currentCurve.map((d, i) => ({
       day: d.day,
       current: d.cumulative,
       previous: previousCurve?.[i]?.cumulative ?? null,
+      avg3: avg3Curve?.[i]?.cumulative ?? null,
     }));
-  }, [currentCurve, previousCurve]);
+  }, [currentCurve, previousCurve, avg3Curve]);
 
   // Find last day with spending data
   const lastDataDay = useMemo(() => {
-    for (let i = currentCurve.length - 1; i >= 0; i--) {
-      if (i === 0 || currentCurve[i].cumulative !== currentCurve[i - 1].cumulative) {
-        // find last day that had a change or the last day with data
-      }
-    }
     if (data.data_through) return new Date(data.data_through).getDate();
     return pace.daysElapsed;
-  }, [currentCurve, data, pace]);
+  }, [data, pace]);
 
   const lastCurrentValue = chartData[lastDataDay - 1]?.current ?? 0;
-  const lastPreviousValue = previousCurve?.[previousCurve.length - 1]?.cumulative ?? null;
-  const diff = lastPreviousValue != null ? lastCurrentValue - lastPreviousValue : null;
+  const lastAvg3Value = avg3Curve?.[lastDataDay - 1]?.cumulative ?? null;
+  const diff = lastAvg3Value != null ? lastCurrentValue - lastAvg3Value : null;
   const diffLabel = diff != null
     ? (diff >= 0 ? `${rCompact(diff)} acima` : `${rCompact(Math.abs(diff))} abaixo`)
     : null;
 
-  // Projected line (dashed extension)
-  const projectedData = useMemo(() => {
-    if (!data.partial && !data.data_through) return null;
-    const startDay = lastDataDay;
-    const startValue = chartData[startDay - 1]?.current ?? 0;
-    const daysInMonth = pace.daysInMonth;
-    const dailyAvg = pace.dailyAvg;
-    const points = [];
-    for (let d = startDay; d <= daysInMonth; d++) {
-      points.push({
-        day: d,
-        projected: Math.round((startValue + dailyAvg * (d - startDay)) * 100) / 100,
-      });
-    }
-    return points;
-  }, [data, lastDataDay, chartData, pace]);
+  // Current line color: green if below avg3, red if above
+  const currentColor = diff != null && diff <= 0 ? "#52c41a" : "#ff4d4f";
 
-  // Merge projected into chart data
+  // Truncate current month line at lastDataDay
   const fullChartData = useMemo(() => {
-    const projMap = new Map<number, number>();
-    if (projectedData) {
-      for (const p of projectedData) projMap.set(p.day, p.projected);
-    }
     return chartData.map((d) => ({
       ...d,
-      projected: projMap.get(d.day) ?? null,
+      current: d.day <= lastDataDay ? d.current : null,
     }));
-  }, [chartData, projectedData]);
+  }, [chartData, lastDataDay]);
 
   return (
     <VisorCard>
@@ -148,13 +143,13 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
 
       {/* Variation badge */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
-        {pace.variationVsPrevious != null && (
-          <PercentChange value={pace.variationVsPrevious} invert />
-        )}
-        {lastPreviousValue != null && (
-          <span style={{ fontSize: 13, color: "#8c8c8c" }}>
-            vs {r(lastPreviousValue!)} mes anterior
-          </span>
+        {lastAvg3Value != null && diff != null && (
+          <>
+            <PercentChange value={lastAvg3Value > 0 ? (diff / lastAvg3Value) * 100 : 0} invert />
+            <span style={{ fontSize: 13, color: "#8c8c8c" }}>
+              vs {r(lastAvg3Value)} media 3 meses
+            </span>
+          </>
         )}
       </div>
 
@@ -163,12 +158,8 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
         <AreaChart data={fullChartData} margin={{ left: 10, right: 20, top: 10, bottom: 5 }}>
           <defs>
             <linearGradient id="paceGradCurrent" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#ff6b6b" stopOpacity={0.15} />
-              <stop offset="100%" stopColor="#ff6b6b" stopOpacity={0.02} />
-            </linearGradient>
-            <linearGradient id="paceGradBelow" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#ffa940" stopOpacity={0.25} />
-              <stop offset="100%" stopColor="#ffa940" stopOpacity={0.05} />
+              <stop offset="0%" stopColor={currentColor} stopOpacity={0.15} />
+              <stop offset="100%" stopColor={currentColor} stopOpacity={0.02} />
             </linearGradient>
           </defs>
           <XAxis
@@ -189,7 +180,7 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
           />
           <Tooltip
             formatter={(v: number, name: string) => {
-              const label = name === "current" ? "Este mes" : name === "previous" ? "Mes passado" : "Projecao";
+              const label = name === "current" ? "Este mes" : name === "previous" ? "Mes passado" : "Media 3 meses";
               return [r(v), label];
             }}
             labelFormatter={(l) => `Dia ${l}`}
@@ -201,6 +192,20 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
               fontSize: 13,
             }}
           />
+
+          {/* Average 3 months - dashed blue */}
+          {avg3Curve && (
+            <Area
+              type="monotone"
+              dataKey="avg3"
+              stroke="#4096ff"
+              strokeWidth={1.5}
+              strokeDasharray="6 4"
+              fill="none"
+              dot={false}
+              connectNulls={false}
+            />
+          )}
 
           {/* Previous month - dashed gray */}
           {previousCurve && (
@@ -216,23 +221,11 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
             />
           )}
 
-          {/* Projected - dashed continuation */}
-          <Area
-            type="monotone"
-            dataKey="projected"
-            stroke="#bfbfbf"
-            strokeWidth={1.5}
-            strokeDasharray="6 4"
-            fill="none"
-            dot={false}
-            connectNulls={false}
-          />
-
-          {/* Current month - solid red with gradient fill */}
+          {/* Current month - solid line with gradient fill */}
           <Area
             type="monotone"
             dataKey="current"
-            stroke="#ff4d4f"
+            stroke={currentColor}
             strokeWidth={2.5}
             fill="url(#paceGradCurrent)"
             dot={false}
@@ -244,7 +237,7 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
             x={lastDataDay}
             y={lastCurrentValue}
             r={5}
-            fill="#ff4d4f"
+            fill={currentColor}
             stroke="#fff"
             strokeWidth={2}
           >
@@ -252,7 +245,7 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
               value={r(lastCurrentValue)}
               position="top"
               offset={12}
-              style={{ fontSize: 11, fontWeight: 600, fill: "#ff4d4f" }}
+              style={{ fontSize: 11, fontWeight: 600, fill: currentColor }}
             />
           </ReferenceDot>
         </AreaChart>
@@ -261,9 +254,15 @@ function SpendingPaceCard({ data, previousData }: { data: BudgetData; previousDa
       {/* Legend */}
       <div style={{ display: "flex", gap: 20, marginTop: 12, paddingLeft: 10 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <div style={{ width: 16, height: 2, background: "#ff4d4f", borderRadius: 1 }} />
+          <div style={{ width: 16, height: 2, background: currentColor, borderRadius: 1 }} />
           <span style={{ fontSize: 12, color: "#8c8c8c" }}>Este mes</span>
         </div>
+        {avg3Curve && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div style={{ width: 16, height: 0, borderTop: "2px dashed #4096ff" }} />
+            <span style={{ fontSize: 12, color: "#8c8c8c" }}>Media 3 meses</span>
+          </div>
+        )}
         {previousCurve && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <div style={{ width: 16, height: 0, borderTop: "2px dashed #bfbfbf" }} />
@@ -565,6 +564,7 @@ type TxKey = string;
 function CategoryRow({
   category, amount, previousAmount, variation, subcategories,
   forceExpand, checkedTxs, onToggleTx, onToggleGroup,
+  totalExpenses, bucketTotal,
 }: {
   category: string; amount: number;
   previousAmount: number | null; variation: number | null;
@@ -573,6 +573,8 @@ function CategoryRow({
   checkedTxs: Set<TxKey>;
   onToggleTx: (key: TxKey, amount: number) => void;
   onToggleGroup: (txs: { _key: string; amount: number }[]) => void;
+  totalExpenses: number;
+  bucketTotal: number;
 }) {
   const { token } = theme.useToken();
   const { redacted } = useRedact();
@@ -601,7 +603,7 @@ function CategoryRow({
         onClick={() => setLocalExpanded(!localExpanded)}
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 100px 90px 90px 32px",
+          gridTemplateColumns: "1fr 150px 90px 90px 32px",
           gap: 12,
           alignItems: "center",
           padding: "9px 0 9px 20px",
@@ -615,7 +617,14 @@ function CategoryRow({
           <span style={{ fontSize: 13, fontWeight: 500 }}>{category}</span>
           <span style={{ fontSize: 11, color: "#bfbfbf" }}>({subcategories.length})</span>
         </div>
-        <span style={{ fontSize: 13, fontWeight: 600, textAlign: "right" }}>{r(amount)}</span>
+        <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>{r(amount)}</span>
+          <div style={{ fontSize: 10, color: "#8c8c8c" }}>
+            {bucketTotal > 0 ? formatPercent(Math.round((amount / bucketTotal) * 10000) / 100) : "0%"} bucket
+            {" · "}
+            {totalExpenses > 0 ? formatPercent(Math.round((amount / totalExpenses) * 10000) / 100) : "0%"} total
+          </div>
+        </div>
         <div style={{ textAlign: "center" }}>
           {variation != null ? <PercentChange value={variation} invert size="small" /> : <span style={{ fontSize: 12, color: "#bfbfbf" }}>--</span>}
         </div>
@@ -643,7 +652,7 @@ function CategoryRow({
               onClick={() => toggleSub(sub.name)}
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 100px 90px 90px 32px",
+                gridTemplateColumns: "1fr 150px 90px 90px 32px",
                 gap: 12,
                 alignItems: "center",
                 padding: "7px 0 7px 44px",
@@ -657,7 +666,14 @@ function CategoryRow({
                 <span style={{ fontSize: 12, fontWeight: 500 }}>{sub.name}</span>
                 <span style={{ fontSize: 10, color: "#bfbfbf" }}>({sub.transactions.length})</span>
               </div>
-              <span style={{ fontSize: 12, fontWeight: 600, textAlign: "right" }}>{r(sub.total)}</span>
+              <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: 12, fontWeight: 600 }}>{r(sub.total)}</span>
+                <div style={{ fontSize: 9, color: "#8c8c8c" }}>
+                  {amount > 0 ? formatPercent(Math.round((sub.total / amount) * 10000) / 100) : "0%"} cat
+                  {" · "}
+                  {totalExpenses > 0 ? formatPercent(Math.round((sub.total / totalExpenses) * 10000) / 100) : "0%"} total
+                </div>
+              </div>
               <div style={{ textAlign: "center" }}>
                 {sub.variation != null ? <PercentChange value={sub.variation} invert size="small" /> : <span style={{ fontSize: 12, color: "#bfbfbf" }}>--</span>}
               </div>
@@ -683,7 +699,7 @@ function CategoryRow({
                     key={tx._key}
                     style={{
                       display: "grid",
-                      gridTemplateColumns: "1fr 100px 90px 90px 32px",
+                      gridTemplateColumns: "1fr 150px 90px 90px 32px",
                       gap: 12,
                       alignItems: "center",
                       padding: "5px 0 5px 64px",
@@ -776,6 +792,11 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
     setCheckedTxs(new Set());
     setCheckedTotal(0);
   }, []);
+
+  const catTotalExpenses = useMemo(() => {
+    const cats = data.expenses?.by_category ?? {};
+    return Object.values(cats).reduce((s, c) => s + c.total, 0);
+  }, [data]);
 
   const prevCatMap = useMemo(() => {
     if (!previousData) return null;
@@ -886,6 +907,9 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 15, fontWeight: 700, color: "#6366f1" }}>
               {r(checkedTotal)}
+              <span style={{ fontSize: 11, fontWeight: 500, marginLeft: 4 }}>
+                {catTotalExpenses > 0 ? formatPercent(Math.round((checkedTotal / catTotalExpenses) * 10000) / 100) : "0%"}
+              </span>
             </span>
             <span
               onClick={clearChecked}
@@ -901,7 +925,7 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "1fr 100px 90px 90px 32px",
+          gridTemplateColumns: "1fr 150px 90px 90px 32px",
           gap: 12,
           padding: "0 0 8px 0",
           borderBottom: `1px solid ${token.colorBorderSecondary}`,
@@ -917,16 +941,20 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
 
       {bucketDefs.map((bucket) => {
         const isCollapsed = collapsedBuckets.has(bucket.key);
-        // Collect all filtered txs for this bucket (for checkbox)
+        // Collect all filtered txs for this bucket (for checkbox) and compute filtered total
         const bucketAllTxs: { _key: string; amount: number }[] = [];
+        let filteredBucketTotal = 0;
         for (const cat of bucket.categories) {
           for (const [subName, sub] of Object.entries(cat.data.subcategories)) {
             const fTxs = filterTxs(sub.transactions);
             fTxs.forEach((tx: any, i: number) => {
               bucketAllTxs.push({ _key: `${cat.name}|${subName}|${i}|${tx.description}`, amount: tx.amount });
+              filteredBucketTotal += tx.amount;
             });
           }
         }
+        filteredBucketTotal = Math.round(filteredBucketTotal * 100) / 100;
+        if (bucketAllTxs.length === 0 && provFilter !== "all") return null;
         const allBucketChecked = bucketAllTxs.length > 0 && bucketAllTxs.every((t) => checkedTxs.has(t._key));
         const someBucketChecked = !allBucketChecked && bucketAllTxs.some((t) => checkedTxs.has(t._key));
 
@@ -937,7 +965,7 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
               onClick={() => toggleBucket(bucket.key)}
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 100px 90px 90px 32px",
+                gridTemplateColumns: "1fr 150px 90px 90px 32px",
                 gap: 12,
                 alignItems: "center",
                 padding: "12px 0",
@@ -951,7 +979,12 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
                 <span style={{ fontSize: 13, fontWeight: 700 }}>{bucket.name}</span>
                 <span style={{ fontSize: 11, color: "#8c8c8c" }}>({bucket.categories.length})</span>
               </div>
-              <span style={{ fontSize: 14, fontWeight: 700, textAlign: "right" }}>{r(bucket.total)}</span>
+              <div style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>{r(filteredBucketTotal)}</span>
+                <div style={{ fontSize: 10, color: "#8c8c8c" }}>
+                  {catTotalExpenses > 0 ? formatPercent(Math.round((filteredBucketTotal / catTotalExpenses) * 10000) / 100) : "0%"} do total
+                </div>
+              </div>
               <span />
               <span />
               <Checkbox
@@ -984,6 +1017,7 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
                 .filter((s) => s.transactions.length > 0)
                 .sort((a, b) => b.total - a.total);
               const filteredCatTotal = subs.reduce((s, sub) => s + sub.total, 0);
+              if (subs.length === 0) return null;
               return (
                 <CategoryRow
                   key={cat.name}
@@ -996,6 +1030,8 @@ function CategoriesCard({ data, previousData }: { data: BudgetData; previousData
                   checkedTxs={checkedTxs}
                   onToggleTx={handleToggleTx}
                   onToggleGroup={handleToggleGroup}
+                  totalExpenses={catTotalExpenses}
+                  bucketTotal={filteredBucketTotal}
                 />
               );
             })}
@@ -1234,6 +1270,11 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
     );
   }, [previousData]);
 
+  const totalExpenses = useMemo(() => {
+    const cats = data.expenses?.by_category ?? {};
+    return Object.values(cats).reduce((s, c) => s + c.total, 0);
+  }, [data]);
+
   const maxTotal = useMemo(() => {
     if (categories.length === 0) return 1;
     const maxCurrent = categories[0]?.total ?? 0;
@@ -1302,6 +1343,9 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 15, fontWeight: 700, color: "#6366f1" }}>
               {r(checkedTotal)}
+              <span style={{ fontSize: 11, fontWeight: 500, marginLeft: 4 }}>
+                {totalExpenses > 0 ? formatPercent(Math.round((checkedTotal / totalExpenses) * 10000) / 100) : "0%"}
+              </span>
             </span>
             <span
               onClick={clearChecked}
@@ -1359,8 +1403,13 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
               )}
             </div>
 
-            {/* Current amount */}
-            <span style={{ fontSize: 13, fontWeight: 600 }}>{r(cat.total)}</span>
+            {/* Current amount + % */}
+            <div>
+              <span style={{ fontSize: 13, fontWeight: 600 }}>{r(cat.total)}</span>
+              <span style={{ fontSize: 10, color: "#8c8c8c", marginLeft: 4 }}>
+                {totalExpenses > 0 ? formatPercent(Math.round((cat.total / totalExpenses) * 10000) / 100) : "0%"}
+              </span>
+            </div>
 
             {/* Comparison bar */}
             <div style={{ position: "relative", height: 10, borderRadius: 5, background: token.colorFillSecondary, overflow: "hidden" }}>
@@ -1489,20 +1538,22 @@ function InstallmentsCard({ data }: { data: BudgetData }) {
           <div style={{ fontSize: 20, fontWeight: 300 }}>{installments.length}</div>
         </div>
         {[
-          { idx: 0, label: "Saem mes que vem", color: "#52c41a" },
-          { idx: 1, label: "Saem em 2 meses", color: "#52c41a" },
-          { idx: 2, label: "Saem em 3 meses", color: "#fa8c16" },
-          { idx: 3, label: "Saem em 4 meses", color: "#fa8c16" },
-          { idx: 4, label: "Saem em 5 meses", color: "#fa8c16" },
-          { idx: 5, label: "Saem em 6 meses", color: "#fa8c16" },
+          { idx: 0, label: "Saem esse mes", color: "#52c41a" },
+          { idx: 1, label: "Saem mes que vem", color: "#fa8c16" },
+          { idx: 2, label: "Saem em 2 meses", color: "#fa8c16" },
+          { idx: 3, label: "Saem em 3 meses", color: "#4096ff" },
+          { idx: 4, label: "Saem em 4 meses", color: "#4096ff" },
+          { idx: 5, label: "Saem em 5 meses", color: "#4096ff" },
         ].map(({ idx, label, color: c }) => {
           const val = freedByMonth[idx];
           const prev = idx > 0 ? freedByMonth[idx - 1] : 0;
-          if (!val || val <= prev) return null;
+          const onlyThisMonth = val - prev;
+          if (!val || onlyThisMonth <= 0) return null;
           return (
             <div key={idx}>
               <div style={{ fontSize: 11, color: "#8c8c8c", marginBottom: 2 }}>{label}</div>
               <div style={{ fontSize: 20, fontWeight: 300, color: c }}>{r(val)}</div>
+              <div style={{ fontSize: 10, color: "#8c8c8c" }}>+{r(onlyThisMonth)} nesse periodo</div>
             </div>
           );
         })}
@@ -1670,7 +1721,7 @@ export default function OverviewPage() {
 
       {/* Top row: Ritmo + Resultado */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
-        <SpendingPaceCard data={data} previousData={previousData} />
+        <SpendingPaceCard data={data} previousData={previousData} allMonths={allMonths} />
         <PartialResultCard data={data} previousData={previousData} />
       </div>
 
