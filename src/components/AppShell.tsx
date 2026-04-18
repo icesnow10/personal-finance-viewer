@@ -10,9 +10,11 @@ import {
   Settings,
   Sun,
   Moon,
+  Terminal,
 } from "lucide-react";
 import { useRouter } from "next/router";
 import { useThemeMode } from "@/context/ThemeContext";
+import { PromptShortcutModal } from "@/components/PromptShortcutModal";
 
 const { Sider, Header, Content } = Layout;
 const { Title } = Typography;
@@ -55,6 +57,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const { mode, toggle: toggleTheme } = useThemeMode();
   const [collapsed, setCollapsed] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const { token } = theme.useToken();
 
   const selected = useMemo(
@@ -117,12 +120,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         >
           <Space>
             <Button
+              icon={<Terminal size={16} />}
+              onClick={() => setShortcutsOpen(true)}
+              type="text"
+              title="Atalhos de prompts"
+            />
+            <Button
               icon={mode === "dark" ? <Sun size={16} /> : <Moon size={16} />}
               onClick={toggleTheme}
               type="text"
             />
           </Space>
         </Header>
+        <PromptShortcutModal open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
         <Content style={{ padding: 24, overflow: "auto", height: "calc(100vh - 56px)" }}>
           {children}
         </Content>
