@@ -4,15 +4,23 @@ import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine, ReferenceDot, Label,
 } from "recharts";
-import { Info, ExternalLink, RefreshCw, ChevronsDown, ChevronsUp, Eye, EyeOff } from "lucide-react";
+import { Info, ExternalLink, RefreshCw, ChevronsDown, ChevronsUp, Eye, EyeOff, List } from "lucide-react";
 import { useRouter } from "next/router";
 import { useBudget } from "@/hooks/useBudget";
+import { flattenTransactions } from "@/context/BudgetContext";
 import { MonthSelector } from "@/components/shared/MonthSelector";
 import { PercentChange } from "@/components/shared/PercentChange";
 import { EmptyState } from "@/components/shared/EmptyState";
+import { TransactionsTable } from "@/components/shared/TransactionsTable";
+import {
+  TransactionsFilters,
+  applyTransactionFilters,
+  DEFAULT_FILTERS,
+  type TransactionFilters,
+} from "@/components/shared/TransactionsFilters";
 import {
   getSpendingPace, getDailySpendingCurve, getCategoryComparison,
-  getBucketProgress, getBudgetBuckets, getBudgetSummary,
+  getBucketProgress, getBudgetBuckets, getBudgetSummary, dayOfMonth,
 } from "@/lib/computations";
 import { formatBRL, formatPercent, formatCompact, REDACTED } from "@/lib/formatters";
 import { useRedact } from "@/context/RedactContext";
@@ -62,6 +70,25 @@ function SectionHead({ title, linkText, href }: { title: string; linkText?: stri
   );
 }
 
+/* ── Neutral percent tag (blue or gray) ───────────────────────── */
+function NeutralPercentTag({ value, color = "blue" }: { value: number; color?: "blue" | "gray" }) {
+  const isPositive = value >= 0;
+  const formatted = formatPercent(value);
+  const palette = color === "gray"
+    ? { fg: "#8c8c8c", bg: "rgba(140,140,140,0.12)" }
+    : { fg: "#4096ff", bg: "rgba(64,150,255,0.1)" };
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      padding: "2px 6px", borderRadius: 4,
+      background: palette.bg, color: palette.fg,
+      fontSize: 12, fontWeight: 500, lineHeight: 1,
+    }}>
+      {isPositive ? "+" : ""}{formatted}
+    </span>
+  );
+}
+
 /* ── Ritmo de Gastos (Visor style) ────────────────────────────── */
 function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData; previousData: BudgetData | null; allMonths: BudgetData[] }) {
   const { token } = theme.useToken();
@@ -74,6 +101,19 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
     [previousData]
   );
   const pace = useMemo(() => getSpendingPace(data, previousData), [data, previousData]);
+
+  // Provisioned amount (expenses only, flagged as provisional)
+  const provisionedAmount = useMemo(() => {
+    let sum = 0;
+    for (const cat of Object.values(data.expenses?.by_category ?? {})) {
+      for (const sub of Object.values(cat.subcategories)) {
+        for (const tx of sub.transactions) {
+          if (tx.provisional) sum += tx.amount;
+        }
+      }
+    }
+    return Math.round(sum * 100) / 100;
+  }, [data]);
 
   // Average of last 3 months curve
   const avg3Curve = useMemo(() => {
@@ -103,13 +143,16 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
 
   // Find last day with spending data
   const lastDataDay = useMemo(() => {
-    if (data.data_through) return new Date(data.data_through).getDate();
+    if (data.data_through) return dayOfMonth(data.data_through);
     return pace.daysElapsed;
   }, [data, pace]);
 
-  const lastCurrentValue = chartData[lastDataDay - 1]?.current ?? 0;
+  const rawLastValue = chartData[lastDataDay - 1]?.current ?? 0;
+  const lastCurrentValue = Math.round(rawLastValue * 100) / 100;
   const lastAvg3Value = avg3Curve?.[lastDataDay - 1]?.cumulative ?? null;
+  const lastPreviousValue = previousCurve?.[lastDataDay - 1]?.cumulative ?? null;
   const diff = lastAvg3Value != null ? lastCurrentValue - lastAvg3Value : null;
+  const diffPrev = lastPreviousValue != null ? lastCurrentValue - lastPreviousValue : null;
   const diffLabel = diff != null
     ? (diff >= 0 ? `${rCompact(diff)} acima` : `${rCompact(Math.abs(diff))} abaixo`)
     : null;
@@ -117,44 +160,69 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
   // Current line color: green if below avg3, red if above
   const currentColor = diff != null && diff <= 0 ? "#52c41a" : "#ff4d4f";
 
-  // Truncate current month line at lastDataDay
+  // Hold current line flat at lastCurrentValue past lastDataDay so the
+  // gradient area extends to the end of the chart.
   const fullChartData = useMemo(() => {
     return chartData.map((d) => ({
       ...d,
-      current: d.day <= lastDataDay ? d.current : null,
+      current: d.day <= lastDataDay ? d.current : lastCurrentValue,
     }));
-  }, [chartData, lastDataDay]);
+  }, [chartData, lastDataDay, lastCurrentValue]);
 
   return (
     <VisorCard>
       <SectionHead title="Ritmo de Gastos" linkText="Ver todas" href="/transactions" />
 
-      {/* Big value */}
-      <div style={{ marginBottom: 4 }}>
-        <span style={{ fontSize: 32, fontWeight: 300, color: token.colorText }}>
-          {r(lastCurrentValue)}
-        </span>
-        {diffLabel && (
-          <span style={{ fontSize: 16, fontWeight: 400, color: "#8c8c8c", marginLeft: 8 }}>
-            {diff != null && diff >= 0 ? "acima" : "abaixo"}
+      {/* Hero: current month spending */}
+      <div style={{ marginBottom: 6 }}>
+        <div style={{ fontSize: 13, color: "#8c8c8c", marginBottom: 2 }}>Voce gastou</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 32, fontWeight: 300, color: token.colorText, lineHeight: 1 }}>
+            {r(lastCurrentValue)}
           </span>
+          <span style={{ fontSize: 15, color: "#8c8c8c" }}>este mes</span>
+        </div>
+        {diff != null && (
+          <div style={{ fontSize: 13, color: "#8c8c8c", marginTop: 4 }}>
+            <span style={{ color: token.colorText, fontWeight: 500 }}>{r(Math.abs(diff))}</span>
+            {" "}a {diff >= 0 ? "mais" : "menos"} este mes
+          </div>
+        )}
+        {provisionedAmount > 0 && (
+          <div style={{ fontSize: 12, color: "#8c8c8c", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            nao inclui
+            <span style={{
+              fontSize: 12, color: "#722ed1", fontWeight: 600,
+              background: "rgba(114,46,209,0.1)", padding: "2px 8px", borderRadius: 4,
+            }}>
+              {r(provisionedAmount)} provisionado
+            </span>
+          </div>
         )}
       </div>
 
-      {/* Variation badge */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 24 }}>
+      {/* Comparison badges (blue) */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 20 }}>
+        {lastPreviousValue != null && diffPrev != null && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <NeutralPercentTag value={lastPreviousValue > 0 ? (diffPrev / lastPreviousValue) * 100 : 0} color="gray" />
+            <span style={{ fontSize: 13, color: "#8c8c8c" }}>
+              vs {r(lastPreviousValue)} mes passado
+            </span>
+          </div>
+        )}
         {lastAvg3Value != null && diff != null && (
-          <>
-            <PercentChange value={lastAvg3Value > 0 ? (diff / lastAvg3Value) * 100 : 0} invert />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <NeutralPercentTag value={lastAvg3Value > 0 ? (diff / lastAvg3Value) * 100 : 0} />
             <span style={{ fontSize: 13, color: "#8c8c8c" }}>
               vs {r(lastAvg3Value)} media 3 meses
             </span>
-          </>
+          </div>
         )}
       </div>
 
       {/* Chart */}
-      <ResponsiveContainer width="100%" height={240}>
+      <ResponsiveContainer width="100%" height={360}>
         <AreaChart data={fullChartData} margin={{ left: 10, right: 20, top: 10, bottom: 5 }}>
           <defs>
             <linearGradient id="paceGradCurrent" x1="0" y1="0" x2="0" y2="1">
@@ -232,7 +300,8 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
             connectNulls={false}
           />
 
-          {/* Endpoint dot */}
+
+          {/* Endpoint dot with multi-line label */}
           <ReferenceDot
             x={lastDataDay}
             y={lastCurrentValue}
@@ -242,10 +311,42 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
             strokeWidth={2}
           >
             <Label
-              value={r(lastCurrentValue)}
               position="top"
-              offset={12}
-              style={{ fontSize: 11, fontWeight: 600, fill: currentColor }}
+              offset={14}
+              content={({ viewBox }) => {
+                const vb = viewBox as { x?: number; y?: number; width?: number; height?: number };
+                const dotX = (vb.x ?? 0) + (vb.width ?? 0) / 2;
+                const dotTopY = vb.y ?? 0;
+                const text = diff != null
+                  ? `${r(Math.abs(diff))} a ${diff >= 0 ? "mais" : "menos"} este mes`
+                  : r(lastCurrentValue);
+                const padX = 10;
+                const approxCharW = 6.2;
+                const w = text.length * approxCharW + padX * 2;
+                const h = 24;
+                const rx = 12;
+                const tipX = dotX;
+                const triH = 8;
+                const tipY = dotTopY;
+                const baseY = tipY - triH;
+                const cardOverlap = 4;
+                const y = baseY + cardOverlap - h;
+                const x = tipX - 14;
+                return (
+                  <g>
+                    <rect x={x} y={y} width={w} height={h} rx={rx} ry={rx}
+                      fill={currentColor} />
+                    <polygon
+                      points={`${tipX - 9},${baseY} ${tipX + 9},${baseY} ${tipX},${tipY}`}
+                      fill={currentColor}
+                    />
+                    <text x={x + w / 2} y={y + h / 2 + 4} textAnchor="middle"
+                      style={{ fontSize: 11, fontWeight: 600, fill: "#fff" }}>
+                      {text}
+                    </text>
+                  </g>
+                );
+              }}
             />
           </ReferenceDot>
         </AreaChart>
@@ -281,8 +382,9 @@ const BUCKET_COLORS: Record<string, { bar: string; bg: string }> = {
   liberdade_financeira: { bar: "#52c41a", bg: "rgba(82, 196, 26, 0.08)" },
 };
 
-function BucketRow({ bucket, pendingTargetPct, isPositiveBucket, onTargetChange }: {
+function BucketRow({ bucket, provisioned = 0, pendingTargetPct, isPositiveBucket, onTargetChange }: {
   bucket: ReturnType<typeof getBucketProgress>[0];
+  provisioned?: number;
   pendingTargetPct?: number;
   isPositiveBucket?: boolean;
   onTargetChange?: (pct: number) => void;
@@ -301,14 +403,31 @@ function BucketRow({ bucket, pendingTargetPct, isPositiveBucket, onTargetChange 
   const targetMark = bucket.targetPct * scale;
   const fillPct = Math.min(bucket.actualPct, bucket.targetPct) * scale;
   const overflowPct = overBudget ? (bucket.actualPct - bucket.targetPct) * scale : 0;
+  // Provisioned as a fraction of actualAmount, projected into the bar's scaled space
+  const provFraction = bucket.actualAmount > 0 ? Math.min(provisioned / bucket.actualAmount, 1) : 0;
+  const actualBarPct = fillPct + overflowPct;
+  const provBarPct = actualBarPct * provFraction;
+  const realAmount = Math.max(bucket.actualAmount - provisioned, 0);
 
   return (
     <div style={{ padding: "14px 0", borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
       {/* Name + values */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
         <span style={{ fontSize: 13, fontWeight: 500 }}>{bucket.name}</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 14, fontWeight: 600 }}>{r(bucket.actualAmount)}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
+          <span style={{ fontSize: 14, fontWeight: 600 }}>{r(realAmount)}</span>
+          {provisioned > 0 && (
+            <span style={{
+              fontSize: 10, fontWeight: 600, lineHeight: 1.4,
+              color: "#722ed1",
+              background: "rgba(114,46,209,0.12)",
+              border: "1px solid rgba(114,46,209,0.3)",
+              borderRadius: 4,
+              padding: "1px 6px",
+            }}>
+              +{r(provisioned)} prov.
+            </span>
+          )}
           <span style={{ fontSize: 11, color: "#8c8c8c" }}>
             / {r(bucket.targetAmount)}
           </span>
@@ -326,7 +445,6 @@ function BucketRow({ bucket, pendingTargetPct, isPositiveBucket, onTargetChange 
             height: "100%",
             width: `${fillPct}%`,
             background: colors.bar,
-            borderRadius: overBudget ? "4px 0 0 4px" : 4,
             transition: "width 0.4s ease",
           }}
         />
@@ -340,7 +458,20 @@ function BucketRow({ bucket, pendingTargetPct, isPositiveBucket, onTargetChange 
               height: "100%",
               width: `${overflowPct}%`,
               background: overflowColor,
-              borderRadius: "0 4px 4px 0",
+              transition: "width 0.4s ease",
+            }}
+          />
+        )}
+        {/* Provisioned segment in purple at the LEFT, on top of everything */}
+        {provBarPct > 0 && (
+          <div
+            style={{
+              position: "absolute",
+              left: 0,
+              top: 0,
+              height: "100%",
+              width: `${provBarPct}%`,
+              background: "#722ed1",
               transition: "width 0.4s ease",
             }}
           />
@@ -419,8 +550,30 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
   const prevNet = previousData ? getBudgetSummary(previousData).net : null;
   const netVariation = prevNet != null && prevNet !== 0 ? ((net - prevNet) / Math.abs(prevNet)) * 100 : null;
 
+  // Provisioned amount per category (sum of transactions flagged as provisional)
+  const provisionedByCat = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const [name, cat] of Object.entries(data.expenses?.by_category ?? {})) {
+      let sum = 0;
+      for (const sub of Object.values(cat.subcategories)) {
+        for (const tx of sub.transactions) {
+          if ((tx as { provisional?: boolean }).provisional) sum += tx.amount;
+        }
+      }
+      if (sum > 0) map[name] = Math.round(sum * 100) / 100;
+    }
+    return map;
+  }, [data]);
+  const provisionedTotal = useMemo(
+    () => Math.round(Object.values(provisionedByCat).reduce((s, v) => s + v, 0) * 100) / 100,
+    [provisionedByCat]
+  );
+  const realExpenses = Math.max(expenses - provisionedTotal, 0);
+
   const barTotal = income + expenses;
   const incomePct = barTotal > 0 ? (income / barTotal) * 100 : 50;
+  const realExpensePct = barTotal > 0 ? (realExpenses / barTotal) * 100 : 0;
+  const provPct = barTotal > 0 ? (provisionedTotal / barTotal) * 100 : 0;
 
   const STORAGE_KEY = "budget_bucket_pcts";
   const DEFAULT_PCTS: Record<string, number> = { custos_fixos: 30, conforto: 25, liberdade_financeira: 45 };
@@ -461,6 +614,10 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
       // For liberdade financeira, actual = net (income - expenses leftover)
       const actualAmount = b.key === "liberdade_financeira" ? Math.max(net, 0) : b.actualAmount;
       const actualPct = income > 0 ? Math.round((actualAmount / income) * 10000) / 100 : 0;
+      // Sum provisioned across the categories that belong to this bucket
+      const provisioned = b.key === "liberdade_financeira"
+        ? 0
+        : Math.round(b.categories.reduce((s, c) => s + (provisionedByCat[c] ?? 0), 0) * 100) / 100;
       return {
         ...b,
         targetPct,
@@ -468,9 +625,10 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
         actualAmount,
         actualPct,
         delta: Math.round((actualPct - targetPct) * 100) / 100,
+        provisioned,
       };
     });
-  }, [data, customPcts, income, net]);
+  }, [data, customPcts, income, net, provisionedByCat]);
 
   return (
     <VisorCard>
@@ -493,7 +651,7 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
         )}
       </div>
 
-      {/* Income vs Expense bar */}
+      {/* Income vs Expense bar (provisioned purple FIRST of all) */}
       <div
         style={{
           display: "flex",
@@ -503,8 +661,11 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
           marginBottom: 16,
         }}
       >
+        {provPct > 0 && (
+          <div style={{ width: `${provPct}%`, background: "#722ed1", transition: "width 0.3s" }} />
+        )}
         <div style={{ width: `${incomePct}%`, background: "#4096ff", transition: "width 0.3s" }} />
-        <div style={{ flex: 1, background: "#1d3557", transition: "width 0.3s" }} />
+        <div style={{ width: `${realExpensePct}%`, background: "#1d3557", transition: "width 0.3s" }} />
       </div>
 
       {/* Stats row */}
@@ -515,7 +676,24 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
         </div>
         <div>
           <div style={{ fontSize: 11, color: "#8c8c8c", marginBottom: 2 }}>Gasto</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{r(expenses)}</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{r(realExpenses)}</div>
+          {provisionedTotal > 0 && (
+            <span style={{
+              display: "inline-block",
+              marginTop: 3,
+              fontSize: 10,
+              fontWeight: 600,
+              lineHeight: 1.4,
+              color: "#722ed1",
+              background: "rgba(114,46,209,0.12)",
+              border: "1px solid rgba(114,46,209,0.3)",
+              borderRadius: 4,
+              padding: "1px 6px",
+              whiteSpace: "nowrap",
+            }}>
+              +{r(provisionedTotal)} prov.
+            </span>
+          )}
         </div>
         <div>
           <div style={{ fontSize: 11, color: "#8c8c8c", marginBottom: 2 }}>Excluido</div>
@@ -547,6 +725,7 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
           <BucketRow
             key={b.key}
             bucket={b}
+            provisioned={b.provisioned}
             pendingTargetPct={pendingPcts[b.key]}
             isPositiveBucket={b.key === "liberdade_financeira"}
             onTargetChange={(pct) => handlePctInput(b.key, pct)}
@@ -1064,44 +1243,49 @@ function AccountBillsCard({ data }: { data: BudgetData }) {
 
   const accountStats = useMemo(() => {
     type AccStat = {
-      holder: string; bank: string; accountNumber: string; accountType: "cc" | "savings" | "provisioned";
-      total: number; count: number;
+      holder: string; bank: string; accountNumber: string; accountType: "cc" | "savings" | "orphan";
+      realTotal: number; realCount: number;
+      provTotal: number; provCount: number;
     };
     const map: Record<string, AccStat> = {};
     const cats = data.expenses?.by_category ?? {};
 
-    for (const [, cat] of Object.entries(cats)) {
-      for (const [, sub] of Object.entries(cat.subcategories)) {
+    for (const cat of Object.values(cats)) {
+      for (const sub of Object.values(cat.subcategories)) {
         for (const tx of sub.transactions) {
-          const accNum = tx.account_number || "provisioned";
+          const hasAccount = tx.account_number && tx.account_number !== "provisioned";
+          const accNum = hasAccount ? tx.account_number! : "provisioned";
           const holder = tx.holder || "unknown";
           const key = `${holder}|${accNum}`;
           if (!map[key]) {
-            const isCC = accNum !== "provisioned" && accNum.length <= 6;
+            const isCC = hasAccount && accNum.length <= 6;
             map[key] = {
               holder, bank: tx.bank || "Nubank", accountNumber: accNum,
-              accountType: accNum === "provisioned" ? "provisioned" : isCC ? "cc" : "savings",
-              total: 0, count: 0,
+              accountType: hasAccount ? (isCC ? "cc" : "savings") : "orphan",
+              realTotal: 0, realCount: 0, provTotal: 0, provCount: 0,
             };
           }
-          map[key].total += tx.amount;
-          map[key].count++;
+          if (tx.provisional) {
+            map[key].provTotal += tx.amount;
+            map[key].provCount++;
+          } else {
+            map[key].realTotal += tx.amount;
+            map[key].realCount++;
+          }
         }
       }
     }
-    return Object.values(map).sort((a, b) => b.total - a.total);
+    return Object.values(map).sort((a, b) =>
+      (b.realTotal + b.provTotal) - (a.realTotal + a.provTotal)
+    );
   }, [data]);
 
-  const grandTotal = useMemo(() => accountStats.reduce((s, a) => s + a.total, 0), [accountStats]);
-  const grandCount = useMemo(() => accountStats.reduce((s, a) => s + a.count, 0), [accountStats]);
-  const realAccounts = useMemo(() => accountStats.filter(a => a.accountType !== "provisioned"), [accountStats]);
-  const provAccounts = useMemo(() => accountStats.filter(a => a.accountType === "provisioned"), [accountStats]);
-
-  const getAccountLabel = (a: typeof accountStats[0]) => {
-    if (a.accountType === "cc") return "Fatura atual";
-    if (a.accountType === "savings") return "Conta corrente";
-    return "Provisionado";
-  };
+  const realTotal = useMemo(() => accountStats.reduce((s, a) => s + a.realTotal, 0), [accountStats]);
+  const realCount = useMemo(() => accountStats.reduce((s, a) => s + a.realCount, 0), [accountStats]);
+  const provTotal = useMemo(() => accountStats.reduce((s, a) => s + a.provTotal, 0), [accountStats]);
+  const provCount = useMemo(() => accountStats.reduce((s, a) => s + a.provCount, 0), [accountStats]);
+  const grandTotal = realTotal + provTotal;
+  const grandCount = realCount + provCount;
 
   return (
     <VisorCard>
@@ -1117,92 +1301,89 @@ function AccountBillsCard({ data }: { data: BudgetData }) {
         </span>
       </div>
 
+      {/* Breakdown: real + provisioned */}
+      {provTotal > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "#8c8c8c" }}>
+            <span style={{ fontWeight: 600, color: token.colorText }}>{r(realTotal)}</span> ja lancado ({realCount})
+          </span>
+          <span style={{ fontSize: 12, color: "#8c8c8c" }}>+</span>
+          <span style={{
+            fontSize: 12, color: "#722ed1", fontWeight: 600,
+            background: "rgba(114,46,209,0.1)", padding: "2px 8px", borderRadius: 4,
+          }}>
+            {r(provTotal)} provisionado ({provCount})
+          </span>
+        </div>
+      )}
+
       {/* Account rows */}
       <div style={{ display: "flex", flexDirection: "column", gap: 0, marginTop: 16 }}>
-        {realAccounts.map((acc) => (
-          <div
-            key={`${acc.holder}|${acc.accountNumber}`}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "16px 0",
-              borderBottom: `1px solid ${token.colorBorderSecondary}`,
-            }}
-          >
-            {/* Left: logo + info */}
-            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-              <NuLogo size={40} />
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, textTransform: "capitalize" }}>
-                    {acc.holder}
-                  </span>
-                  <span style={{
-                    fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4,
-                    background: acc.accountType === "cc" ? "rgba(82,196,26,0.1)" : "rgba(64,150,255,0.1)",
-                    color: acc.accountType === "cc" ? "#52c41a" : "#4096ff",
+        {accountStats.map((acc) => {
+          const isOrphan = acc.accountType === "orphan";
+          const rowTotal = acc.realTotal + acc.provTotal;
+          const rowCount = acc.realCount + acc.provCount;
+          const badgeBg = acc.accountType === "cc" ? "rgba(82,196,26,0.1)"
+            : acc.accountType === "savings" ? "rgba(64,150,255,0.1)"
+            : "rgba(114,46,209,0.1)";
+          const badgeFg = acc.accountType === "cc" ? "#52c41a"
+            : acc.accountType === "savings" ? "#4096ff"
+            : "#722ed1";
+          const badgeText = acc.accountType === "cc" ? "Ciclo atual"
+            : acc.accountType === "savings" ? "Conta"
+            : "Provisionado";
+          return (
+            <div
+              key={`${acc.holder}|${acc.accountNumber}`}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                padding: "16px 0",
+                borderBottom: `1px solid ${token.colorBorderSecondary}`,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                {isOrphan ? (
+                  <div style={{
+                    width: 40, height: 40, borderRadius: 20,
+                    background: "rgba(114,46,209,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
                   }}>
-                    {acc.accountType === "cc" ? "Ciclo atual" : "Conta"}
-                  </span>
-                </div>
-                <div style={{ fontSize: 12, color: "#8c8c8c", marginTop: 2 }}>
-                  {getAccountLabel(acc)} · {acc.accountNumber}
+                    <span style={{ fontSize: 18 }}>&#10024;</span>
+                  </div>
+                ) : (
+                  <NuLogo size={40} />
+                )}
+                <div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, textTransform: "capitalize" }}>
+                      {acc.holder}
+                    </span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4,
+                      background: badgeBg, color: badgeFg,
+                    }}>
+                      {badgeText}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#8c8c8c", marginTop: 2 }}>
+                    {isOrphan ? "Previsto ate o fim do mes" : `${acc.accountType === "cc" ? "Fatura atual" : "Conta corrente"} · ${acc.accountNumber}`}
+                  </div>
                 </div>
               </div>
-            </div>
-
-            {/* Right: amount + count */}
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>{r(acc.total)}</div>
-              <div style={{ fontSize: 11, color: "#8c8c8c", marginTop: 2 }}>
-                {acc.count} transacoes
-              </div>
-            </div>
-          </div>
-        ))}
-
-        {/* Provisioned */}
-        {provAccounts.map((acc) => (
-          <div
-            key={`${acc.holder}|${acc.accountNumber}`}
-            style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "16px 0",
-              borderBottom: `1px solid ${token.colorBorderSecondary}`,
-              opacity: 0.6,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-              <div style={{
-                width: 40, height: 40, borderRadius: 20,
-                background: "rgba(114,46,209,0.15)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-              }}>
-                <span style={{ fontSize: 18 }}>&#10024;</span>
-              </div>
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, textTransform: "capitalize" }}>
-                    {acc.holder}
-                  </span>
-                  <span style={{
-                    fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4,
-                    background: "rgba(114,46,209,0.1)", color: "#722ed1",
-                  }}>
-                    Provisionado
-                  </span>
-                </div>
-                <div style={{ fontSize: 12, color: "#8c8c8c", marginTop: 2 }}>
-                  Previsto ate o fim do mes
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 16, fontWeight: 600 }}>{r(rowTotal)}</div>
+                {acc.provTotal > 0 && !isOrphan && (
+                  <div style={{ fontSize: 11, marginTop: 2 }}>
+                    <span style={{ color: "#8c8c8c" }}>{r(acc.realTotal)} + </span>
+                    <span style={{ color: "#722ed1", fontWeight: 600 }}>{r(acc.provTotal)} prov.</span>
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: "#8c8c8c", marginTop: 2 }}>
+                  {rowCount} {isOrphan ? "itens" : "transacoes"}
                 </div>
               </div>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>{r(acc.total)}</div>
-              <div style={{ fontSize: 11, color: "#8c8c8c", marginTop: 2 }}>
-                {acc.count} itens
-              </div>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </VisorCard>
   );
@@ -1218,6 +1399,23 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
   const [checkedCats, setCheckedCats] = useState<Set<string>>(new Set());
   const [checkedTotal, setCheckedTotal] = useState(0);
   const [viewMode, setViewMode] = useState<TopCatView>("top10");
+  const [drilldownCat, setDrilldownCat] = useState<string | null>(null);
+  const [drilldownFilters, setDrilldownFilters] = useState<TransactionFilters>(DEFAULT_FILTERS);
+
+  const allFlat = useMemo(() => flattenTransactions(data), [data]);
+  const drilldownBaseTx = useMemo(
+    () => (drilldownCat ? allFlat.filter((t) => t.category === drilldownCat) : []),
+    [allFlat, drilldownCat]
+  );
+  const drilldownTx = useMemo(
+    () => applyTransactionFilters(drilldownBaseTx, drilldownFilters),
+    [drilldownBaseTx, drilldownFilters]
+  );
+
+  const openDrilldown = useCallback((catName: string) => {
+    setDrilldownCat(catName);
+    setDrilldownFilters(DEFAULT_FILTERS);
+  }, []);
 
   const handleToggleCat = useCallback((name: string, amount: number) => {
     setCheckedCats(prev => {
@@ -1241,6 +1439,21 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
   const allCategories = useMemo(() => {
     const cats = data.expenses?.by_category ?? {};
     return Object.entries(cats).map(([name, cat]) => ({ name, total: cat.total }));
+  }, [data]);
+
+  // Provisioned amount per category (sum of transactions flagged as provisional)
+  const provisionedByCat = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const [name, cat] of Object.entries(data.expenses?.by_category ?? {})) {
+      let sum = 0;
+      for (const sub of Object.values(cat.subcategories)) {
+        for (const tx of sub.transactions) {
+          if ((tx as { provisional?: boolean }).provisional) sum += tx.amount;
+        }
+      }
+      if (sum > 0) map[name] = Math.round(sum * 100) / 100;
+    }
+    return map;
   }, [data]);
 
   const categories = useMemo(() => {
@@ -1274,13 +1487,6 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
     const cats = data.expenses?.by_category ?? {};
     return Object.values(cats).reduce((s, c) => s + c.total, 0);
   }, [data]);
-
-  const maxTotal = useMemo(() => {
-    if (categories.length === 0) return 1;
-    const maxCurrent = categories[0]?.total ?? 0;
-    const maxPrev = prevCatMap ? Math.max(...categories.map(c => prevCatMap[c.name] ?? 0)) : 0;
-    return Math.max(maxCurrent, maxPrev, 1);
-  }, [categories, prevCatMap]);
 
   const bucketForCategory = useMemo(() => {
     const buckets = getBudgetBuckets(data);
@@ -1317,7 +1523,7 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
 
       {/* Column headers */}
       <div style={{
-        display: "grid", gridTemplateColumns: "28px 200px 90px 1fr 80px 90px 32px",
+        display: "grid", gridTemplateColumns: "28px 200px 110px 1fr 80px 100px 90px 32px 32px",
         gap: 12, padding: "0 0 10px 0",
         borderBottom: `1px solid ${token.colorBorderSecondary}`,
       }}>
@@ -1326,7 +1532,9 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
         <span style={{ fontSize: 11, color: "#8c8c8c" }}>Atual</span>
         <span style={{ fontSize: 11, color: "#8c8c8c", textAlign: "center" }}>vs Mes Anterior</span>
         <span style={{ fontSize: 11, color: "#8c8c8c", textAlign: "center" }}>Variacao</span>
+        <span style={{ fontSize: 11, color: "#8c8c8c", textAlign: "right" }}>Diferenca</span>
         <span style={{ fontSize: 11, color: "#8c8c8c", textAlign: "right" }}>Anterior</span>
+        <span />
         <span />
       </div>
 
@@ -1368,9 +1576,12 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
         const isDown = variation != null && variation < 0;
         const isNew = prevTotal == null || prevTotal === 0;
 
-        // Bar widths relative to max
-        const currentBarPct = (cat.total / maxTotal) * 100;
-        const prevBarPct = prevTotal != null ? (prevTotal / maxTotal) * 100 : 0;
+        // Bar widths normalized per row (max of current/prev for this category)
+        const rowMax = Math.max(cat.total, prevTotal ?? 0, 1);
+        const currentBarPct = (cat.total / rowMax) * 100;
+        const prevBarPct = prevTotal != null ? (prevTotal / rowMax) * 100 : 0;
+        const provisioned = provisionedByCat[cat.name] ?? 0;
+        const provBarPct = (provisioned / rowMax) * 100;
 
         // Bar color: red if over previous, green if under or new
         const barColor = isUp ? "#ff4d4f" : "#52c41a";
@@ -1379,7 +1590,7 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
           <div
             key={cat.name}
             style={{
-              display: "grid", gridTemplateColumns: "28px 200px 90px 1fr 80px 90px 32px",
+              display: "grid", gridTemplateColumns: "28px 200px 110px 1fr 80px 100px 90px 32px 32px",
               gap: 12, alignItems: "center",
               padding: "14px 0 14px 0",
               borderBottom: `1px solid ${token.colorBorderSecondary}`,
@@ -1403,30 +1614,83 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
               )}
             </div>
 
-            {/* Current amount + % */}
+            {/* Current amount + % (+ purple provisioned tag below) */}
             <div>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>{r(cat.total)}</span>
-              <span style={{ fontSize: 10, color: "#8c8c8c", marginLeft: 4 }}>
-                {totalExpenses > 0 ? formatPercent(Math.round((cat.total / totalExpenses) * 10000) / 100) : "0%"}
-              </span>
+              <div style={{ whiteSpace: "nowrap" }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{r(cat.total)}</span>
+                <span style={{ fontSize: 10, color: "#8c8c8c", marginLeft: 4 }}>
+                  {totalExpenses > 0 ? formatPercent(Math.round((cat.total / totalExpenses) * 10000) / 100) : "0%"}
+                </span>
+              </div>
+              {(provisionedByCat[cat.name] ?? 0) > 0 && (
+                <span style={{
+                  display: "inline-block",
+                  marginTop: 3,
+                  fontSize: 10,
+                  fontWeight: 600,
+                  lineHeight: 1.4,
+                  color: "#722ed1",
+                  background: "rgba(114,46,209,0.12)",
+                  border: "1px solid rgba(114,46,209,0.3)",
+                  borderRadius: 4,
+                  padding: "1px 6px",
+                  whiteSpace: "nowrap",
+                }}>
+                  +{r(provisionedByCat[cat.name])} prov.
+                </span>
+              )}
             </div>
 
             {/* Comparison bar */}
             <div style={{ position: "relative", height: 10, borderRadius: 5, background: token.colorFillSecondary, overflow: "hidden" }}>
-              {/* Previous month bar (gray background reference) */}
-              {prevBarPct > 0 && (
+              {isUp ? (
+                <>
+                  {/* Current (wider) as light red track */}
+                  <div style={{
+                    position: "absolute", left: 0, top: 0, height: "100%",
+                    width: `${currentBarPct}%`,
+                    background: "rgba(168,7,26,0.25)",
+                    transition: "width 0.4s ease",
+                  }} />
+                  {/* Previous (narrower) as dark red on top (real portion, after provisioned) */}
+                  {prevBarPct > 0 && prevBarPct > provBarPct && (
+                    <div style={{
+                      position: "absolute", left: `${provBarPct}%`, top: 0, height: "100%",
+                      width: `${prevBarPct - provBarPct}%`,
+                      background: "#a8071a",
+                    }} />
+                  )}
+                </>
+              ) : (
+                <>
+                  {/* Previous (wider) as gray track */}
+                  {prevBarPct > 0 && (
+                    <div style={{
+                      position: "absolute", left: 0, top: 0, height: "100%",
+                      width: `${prevBarPct}%`,
+                      background: "rgba(140,140,140,0.35)",
+                    }} />
+                  )}
+                  {/* Current real (after provisioned) in green */}
+                  {currentBarPct > provBarPct && (
+                    <div style={{
+                      position: "absolute", left: `${provBarPct}%`, top: 0, height: "100%",
+                      width: `${currentBarPct - provBarPct}%`,
+                      background: "#52c41a",
+                      transition: "width 0.4s ease",
+                    }} />
+                  )}
+                </>
+              )}
+              {/* Provisioned segment in purple at the LEFT, on top of everything */}
+              {provisioned > 0 && (
                 <div style={{
                   position: "absolute", left: 0, top: 0, height: "100%",
-                  width: `${prevBarPct}%`, background: token.colorFillSecondary,
-                  borderRadius: 5,
+                  width: `${provBarPct}%`,
+                  background: "#722ed1",
+                  transition: "width 0.4s ease",
                 }} />
               )}
-              {/* Current bar */}
-              <div style={{
-                position: "absolute", left: 0, top: 0, height: "100%",
-                width: `${currentBarPct}%`, background: barColor,
-                borderRadius: 5, transition: "width 0.4s ease",
-              }} />
             </div>
 
             {/* Variation */}
@@ -1437,6 +1701,16 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
                 <span style={{ fontSize: 11, color: "#bfbfbf" }}>--</span>
               )}
             </div>
+
+            {/* Difference */}
+            <span style={{
+              fontSize: 12, textAlign: "right", fontWeight: 500,
+              color: prevTotal == null ? "#bfbfbf" : isUp ? "#ff4d4f" : isDown ? "#52c41a" : "#8c8c8c",
+            }}>
+              {prevTotal != null
+                ? `${cat.total - prevTotal >= 0 ? "+" : "-"}${redacted ? REDACTED : formatBRL(Math.abs(cat.total - prevTotal))}`
+                : "--"}
+            </span>
 
             {/* Previous amount */}
             <span style={{ fontSize: 12, color: "#8c8c8c", textAlign: "right" }}>
@@ -1449,9 +1723,41 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
               onChange={() => handleToggleCat(cat.name, cat.total)}
               style={{ justifySelf: "center" }}
             />
+
+            {/* Open transactions modal */}
+            <span
+              role="button"
+              title="Ver transacoes"
+              onClick={() => openDrilldown(cat.name)}
+              style={{
+                justifySelf: "center", cursor: "pointer", color: "#8c8c8c",
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 24, height: 24, borderRadius: 4,
+              }}
+            >
+              <List size={14} />
+            </span>
           </div>
         );
       })}
+
+      <Modal
+        open={drilldownCat != null}
+        onCancel={() => setDrilldownCat(null)}
+        footer={null}
+        width="80%"
+        destroyOnHidden
+        title={drilldownCat ? `${getCategoryMeta(drilldownCat).emoji} ${drilldownCat} — ${drilldownBaseTx.length} transacoes` : ""}
+        styles={{ body: { padding: 16 } }}
+      >
+        <TransactionsFilters
+          transactions={drilldownBaseTx}
+          value={drilldownFilters}
+          onChange={setDrilldownFilters}
+          resultCount={drilldownTx.length}
+        />
+        <TransactionsTable transactions={drilldownTx} redacted={redacted} pageSize={50} />
+      </Modal>
     </VisorCard>
   );
 }
@@ -1664,6 +1970,157 @@ function InstallmentsCard({ data }: { data: BudgetData }) {
   );
 }
 
+/* ── Composicao do Mes (a vista vs parcela nova vs parcela antiga) ── */
+function MonthCompositionCard({ data }: { data: BudgetData }) {
+  const { token } = theme.useToken();
+  const { redacted } = useRedact();
+  const r = (v: number) => redacted ? REDACTED : formatBRL(v);
+
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (key: string) =>
+    setExpanded(prev => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+
+  const composition = useMemo(() => {
+    type BucketKey = "avista" | "nova" | "antiga";
+    const buckets: Record<BucketKey, { amount: number; count: number; byCategory: Record<string, { amount: number; count: number }> }> = {
+      avista: { amount: 0, count: 0, byCategory: {} },
+      nova:   { amount: 0, count: 0, byCategory: {} },
+      antiga: { amount: 0, count: 0, byCategory: {} },
+    };
+
+    const consume = (tx: any, categoryName: string) => {
+      if (tx.provisional) return;
+      const total = tx.totalInstallments;
+      const n = tx.installmentNumber;
+      const key: BucketKey = total && total >= 2 && n
+        ? (n === 1 ? "nova" : "antiga")
+        : "avista";
+      const b = buckets[key];
+      b.amount += tx.amount;
+      b.count++;
+      if (!b.byCategory[categoryName]) b.byCategory[categoryName] = { amount: 0, count: 0 };
+      b.byCategory[categoryName].amount += tx.amount;
+      b.byCategory[categoryName].count++;
+    };
+
+    const cats = data.expenses?.by_category ?? {};
+    for (const [catName, cat] of Object.entries(cats)) {
+      for (const sub of Object.values(cat.subcategories)) {
+        for (const tx of sub.transactions) consume(tx, catName);
+      }
+    }
+    for (const tx of data.expenses?.unclassified ?? []) consume(tx, "Sem categoria");
+
+    const toList = (bc: Record<string, { amount: number; count: number }>) =>
+      Object.entries(bc)
+        .map(([name, v]) => ({ name, amount: v.amount, count: v.count }))
+        .sort((a, b) => b.amount - a.amount);
+
+    const grand = buckets.avista.amount + buckets.nova.amount + buckets.antiga.amount;
+    return {
+      grand,
+      rows: [
+        { key: "avista",  label: "A vista",          amount: buckets.avista.amount, count: buckets.avista.count, color: "#4096ff", hint: "Compras unicas, sem parcelamento",       categories: toList(buckets.avista.byCategory) },
+        { key: "nova",    label: "Parcela nova",     amount: buckets.nova.amount,   count: buckets.nova.count,   color: "#722ed1", hint: "Primeira parcela iniciada este mes",     categories: toList(buckets.nova.byCategory) },
+        { key: "antiga",  label: "Parcela antiga",   amount: buckets.antiga.amount, count: buckets.antiga.count, color: "#8c8c8c", hint: "Parcelas iniciadas em meses anteriores", categories: toList(buckets.antiga.byCategory) },
+      ],
+    };
+  }, [data]);
+
+  const { grand, rows } = composition;
+
+  return (
+    <VisorCard>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <SectionHead title="Composicao do Mes" />
+        <div style={{ fontSize: 20, fontWeight: 300, marginBottom: 20 }}>{r(grand)}</div>
+      </div>
+
+      {/* Stacked bar */}
+      {grand > 0 && (
+        <div style={{ display: "flex", height: 10, borderRadius: 5, overflow: "hidden", marginBottom: 20, background: token.colorFillSecondary }}>
+          {rows.map((row) => {
+            const pct = (row.amount / grand) * 100;
+            if (pct <= 0) return null;
+            return (
+              <div
+                key={row.key}
+                style={{ width: `${pct}%`, background: row.color, transition: "width 0.4s ease" }}
+                title={`${row.label}: ${formatPercent(pct)}`}
+              />
+            );
+          })}
+        </div>
+      )}
+
+      {/* Rows */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {rows.map((row) => {
+          const pct = grand > 0 ? (row.amount / grand) * 100 : 0;
+          const isOpen = expanded.has(row.key);
+          const hasCats = row.categories.length > 0;
+          return (
+            <div key={row.key}>
+              <div
+                onClick={() => hasCats && toggle(row.key)}
+                style={{
+                  display: "grid", gridTemplateColumns: "auto 1fr auto auto", gap: 12, alignItems: "center",
+                  padding: "8px 0", cursor: hasCats ? "pointer" : "default",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 10, color: "#8c8c8c", width: 8, display: "inline-block", transition: "transform 0.2s", transform: isOpen ? "rotate(90deg)" : "rotate(0)", opacity: hasCats ? 1 : 0 }}>&#9654;</span>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: row.color, flexShrink: 0 }} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>{row.label}</div>
+                  <div style={{ fontSize: 11, color: "#8c8c8c", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {row.count} {row.count === 1 ? "transacao" : "transacoes"} - {row.hint}
+                  </div>
+                </div>
+                <span style={{ fontSize: 14, fontWeight: 600, color: token.colorText }}>{r(row.amount)}</span>
+                <span style={{
+                  fontSize: 11, fontWeight: 500, color: row.color,
+                  padding: "2px 8px", borderRadius: 4,
+                  background: `${row.color}1a`, minWidth: 48, textAlign: "center",
+                }}>
+                  {formatPercent(pct)}
+                </span>
+              </div>
+
+              {/* Category breakdown */}
+              {isOpen && hasCats && (
+                <div style={{
+                  padding: "6px 0 10px 30px",
+                  borderLeft: `2px solid ${row.color}33`,
+                  marginLeft: 13, marginBottom: 6,
+                  display: "flex", flexDirection: "column", gap: 6,
+                }}>
+                  {row.categories.map((c) => {
+                    const catPct = row.amount > 0 ? (c.amount / row.amount) * 100 : 0;
+                    const { emoji } = getCategoryMeta(c.name);
+                    return (
+                      <div key={c.name} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 10, alignItems: "center" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                          <span style={{ fontSize: 12 }}>{emoji}</span>
+                          <span style={{ fontSize: 12, color: token.colorText, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</span>
+                          <span style={{ fontSize: 10, color: "#8c8c8c" }}>({c.count})</span>
+                        </div>
+                        <span style={{ fontSize: 12, color: token.colorText }}>{r(c.amount)}</span>
+                        <span style={{ fontSize: 10, color: "#8c8c8c", minWidth: 40, textAlign: "right" }}>{formatPercent(catPct)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </VisorCard>
+  );
+}
+
 /* ── Main Page ────────────────────────────────────────────────── */
 export default function OverviewPage() {
   const { data: activeData, allMonths, loading, refresh } = useBudget();
@@ -1731,9 +2188,10 @@ export default function OverviewPage() {
         <AccountBillsCard data={data} />
       </div>
 
-      {/* Parcelas */}
-      <div style={{ marginTop: 16 }}>
+      {/* Parcelas + Composicao do Mes */}
+      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.7fr", gap: 16, marginTop: 16, alignItems: "stretch" }}>
         <InstallmentsCard data={data} />
+        <MonthCompositionCard data={data} />
       </div>
 
       {/* Categorias */}

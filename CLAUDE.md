@@ -70,7 +70,7 @@ Pure functions over `BudgetData` used by pages:
 
 | Route | File | What it renders |
 |---|---|---|
-| `/overview` | `src/pages/overview/index.tsx` | Spending pace, budget buckets, category tree |
+| `/overview` | `src/pages/overview/index.tsx` | Spending pace, budget buckets, category tree, installments + monthly composition (à vista / parcela nova / parcela antiga) |
 | `/transactions-v2` | `src/pages/transactions-v2/index.tsx` | Searchable/filterable flat transaction table |
 | `/income` | `src/pages/income/index.tsx` | Income breakdown by month and source |
 | `/settings` | `src/pages/settings/index.tsx` | Resources path configuration (writes `.config.json`) |
@@ -80,8 +80,8 @@ Pure functions over `BudgetData` used by pages:
 Terminal icon in the header opens `PromptShortcutModal` (`src/components/PromptShortcutModal.tsx`), which has two tabs:
 
 **Presets** — fire-and-forget terminal. Clicking **Executar** hits `POST /api/run-shortcut` (thin wrapper around `runShortcut()` in `src/lib/runShortcut.ts`), which:
-1. Reads `.config.json` `resourcesPath` and derives the plugin directory as everything before `/resources` (e.g. `.../personal-finance/resources/trevo` → `.../personal-finance`).
-2. Writes a temp `.ps1` that `Set-Location`s to the plugin dir and runs `claude "<prompt>"` (interactive mode, TUI visible).
+1. Reads `.config.json` `resourcesPath` (the full path configured at `/settings`, e.g. `.../personal-finance/resources/trevo`).
+2. Writes a temp `.ps1` that `Set-Location`s to that `resourcesPath` and runs `claude "<prompt>"` (interactive mode, TUI visible).
 3. Spawns `cmd /c start "" powershell -NoExit -File <script>` — the window stays open for interaction after claude exits.
 
 **Agendados** — cron-scheduled runs via `node-cron` (`src/lib/scheduler.ts`). Schedules persist to `.pfv-schedules.json` (gitignored) and are re-registered on every server start. Timezone: America/Sao_Paulo.

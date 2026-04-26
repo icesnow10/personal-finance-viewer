@@ -57,6 +57,17 @@ function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+// Parse the day-of-month from a date string without timezone drift.
+// Pluggy returns dates as "YYYY-MM-DD" or full ISO like "2026-04-01T03:00:00.000Z".
+// Using `new Date(str).getDate()` reinterprets the UTC instant in local tz,
+// pushing April 1 midnight-UTC to March 31 21:00 in BRT (UTC-3). Always take
+// the day component from the YYYY-MM-DD prefix directly.
+export function dayOfMonth(dateStr: string): number {
+  const prefix = dateStr.slice(0, 10);
+  const parts = prefix.split("-");
+  return Number(parts[2]);
+}
+
 function roundPct(value: number): number {
   return Math.round(value * 100) / 100;
 }
@@ -252,14 +263,11 @@ export function getSpendingPace(
 
   let daysElapsed: number;
   if (data.data_through) {
-    const throughDate = new Date(data.data_through);
-    daysElapsed = throughDate.getDate();
+    daysElapsed = dayOfMonth(data.data_through);
   } else if (data.partial) {
-    // estimate from transaction dates
     const dates = getAllTransactionDates(data);
     if (dates.length > 0) {
-      const maxDay = Math.max(...dates.map((d) => new Date(d).getDate()));
-      daysElapsed = maxDay;
+      daysElapsed = Math.max(...dates.map(dayOfMonth));
     } else {
       daysElapsed = daysInMonth;
     }
@@ -313,16 +321,14 @@ export function getDailySpendingCurve(data: BudgetData): DailySpending[] {
     for (const sub of Object.values(cat.subcategories)) {
       for (const tx of sub.transactions) {
         if (tx.date) {
-          const day = new Date(tx.date).getDate();
-          expenses.push({ day, amount: tx.amount });
+          expenses.push({ day: dayOfMonth(tx.date), amount: tx.amount });
         }
       }
     }
   }
   for (const tx of data.expenses.unclassified ?? []) {
     if (tx.date) {
-      const day = new Date(tx.date).getDate();
-      expenses.push({ day, amount: tx.amount });
+      expenses.push({ day: dayOfMonth(tx.date), amount: tx.amount });
     }
   }
 
