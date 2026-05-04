@@ -3,8 +3,6 @@ import { Layout, Menu, Typography, Button, Space, theme } from "antd";
 import {
   LayoutDashboard,
   ArrowLeftRight,
-  TrendingUp,
-  BarChart3,
   Wallet,
   PiggyBank,
   Settings,
@@ -31,19 +29,9 @@ const menuItems = [
     label: "Transacoes",
   },
   {
-    key: "/income",
-    icon: <TrendingUp size={18} />,
-    label: "Receitas",
-  },
-  {
     key: "/investments",
     icon: <PiggyBank size={18} />,
     label: "Investimentos",
-  },
-  {
-    key: "/reports",
-    icon: <BarChart3 size={18} />,
-    label: "Relatorios",
   },
   { type: "divider" as const },
   {

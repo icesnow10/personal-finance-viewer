@@ -136,9 +136,11 @@ export function TransactionsTable({
         sorter: (a, b) => a.amount - b.amount,
         render: (v: number, record: FlatTransaction) => {
           const isIncome = record.type === "income";
+          const isRefund = record.type === "expense" && v < 0;
+          const positive = isIncome || isRefund;
           return (
-            <Text strong style={{ fontSize: 14, color: isIncome ? "#52c41a" : undefined }}>
-              {redacted ? REDACTED : `${isIncome ? "+" : "-"} ${formatBRL(Math.abs(v))}`}
+            <Text strong style={{ fontSize: 14, color: positive ? "#52c41a" : undefined }}>
+              {redacted ? REDACTED : `${positive ? "+" : "-"} ${formatBRL(Math.abs(v))}`}
             </Text>
           );
         },

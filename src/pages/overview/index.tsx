@@ -1,8 +1,10 @@
-import React, { useMemo, useState, useCallback } from "react";
+import React, { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { Typography, theme, Modal, Segmented, Checkbox, InputNumber } from "antd";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine, ReferenceDot, Label,
+  LineChart, Line, Legend, CartesianGrid,
+  BarChart, Bar, Cell, LabelList,
 } from "recharts";
 import { Info, ExternalLink, RefreshCw, ChevronsDown, ChevronsUp, Eye, EyeOff, List } from "lucide-react";
 import { useRouter } from "next/router";
@@ -115,6 +117,33 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
     return Math.round(sum * 100) / 100;
   }, [data]);
 
+  // Total available across buckets — same calculation as PartialResultCard's pill.
+  const totalAvailable = useMemo(() => {
+    const summary = getBudgetSummary(data);
+    const income = summary.total_income;
+    const net = summary.net;
+    const STORAGE_KEY = "budget_bucket_pcts";
+    let customPcts: Record<string, number> = { custos_fixos: 30, conforto: 25, liberdade_financeira: 45 };
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed.custos_fixos + parsed.conforto + parsed.liberdade_financeira === 100) customPcts = parsed;
+        }
+      } catch {}
+    }
+    const raw = getBucketProgress(data);
+    return raw.reduce((s, b) => {
+      const targetPct = customPcts[b.key] ?? b.targetPct;
+      const targetAmount = Math.round(income * targetPct) / 100;
+      const actualAmount = b.key === "liberdade_financeira" ? Math.max(net, 0) : b.actualAmount;
+      return s + Math.max(targetAmount - actualAmount, 0);
+    }, 0);
+  }, [data]);
+  const allBucketsFull = totalAvailable <= 0.01;
+  const heroColor = allBucketsFull ? "#ff4d4f" : "#52c41a";
+
   // Average of last 3 months curve
   const avg3Curve = useMemo(() => {
     const prior = allMonths
@@ -160,27 +189,40 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
   // Current line color: green if below avg3, red if above
   const currentColor = diff != null && diff <= 0 ? "#52c41a" : "#ff4d4f";
 
-  // Hold current line flat at lastCurrentValue past lastDataDay so the
-  // gradient area extends to the end of the chart.
+  // Stop the current-month line at lastDataDay (today). Days beyond have no data yet.
   const fullChartData = useMemo(() => {
     return chartData.map((d) => ({
       ...d,
-      current: d.day <= lastDataDay ? d.current : lastCurrentValue,
+      current: d.day <= lastDataDay ? d.current : null,
     }));
-  }, [chartData, lastDataDay, lastCurrentValue]);
+  }, [chartData, lastDataDay]);
+
+  // Measure chart container width to clamp the endpoint pill inside the plot area.
+  const chartWrapperRef = useRef<HTMLDivElement | null>(null);
+  const [chartContainerWidth, setChartContainerWidth] = useState(0);
+  useEffect(() => {
+    if (!chartWrapperRef.current) return;
+    const el = chartWrapperRef.current;
+    const update = () => setChartContainerWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   return (
     <VisorCard>
       <SectionHead title="Ritmo de Gastos" linkText="Ver todas" href="/transactions" />
 
-      {/* Hero: current month spending */}
+      {/* Hero: total available across buckets (mirrors Resultado Parcial pill) */}
       <div style={{ marginBottom: 6 }}>
-        <div style={{ fontSize: 13, color: "#8c8c8c", marginBottom: 2 }}>Voce gastou</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 32, fontWeight: 300, color: token.colorText, lineHeight: 1 }}>
-            {r(lastCurrentValue)}
+          <span style={{ fontSize: 32, fontWeight: 300, color: heroColor, lineHeight: 1 }}>
+            {allBucketsFull ? r(0) : r(totalAvailable)}
           </span>
-          <span style={{ fontSize: 15, color: "#8c8c8c" }}>este mes</span>
+          <span style={{ fontSize: 15, color: "#8c8c8c" }}>
+            {allBucketsFull ? "buckets esgotados" : "disponivel nos buckets"}
+          </span>
         </div>
         {diff != null && (
           <div style={{ fontSize: 13, color: "#8c8c8c", marginTop: 4 }}>
@@ -222,6 +264,7 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
       </div>
 
       {/* Chart */}
+      <div ref={chartWrapperRef} style={{ width: "100%" }}>
       <ResponsiveContainer width="100%" height={360}>
         <AreaChart data={fullChartData} margin={{ left: 10, right: 20, top: 10, bottom: 5 }}>
           <defs>
@@ -236,7 +279,7 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
             tickLine={false}
             axisLine={{ stroke: "#e8e8e8" }}
             tick={{ fill: "#8c8c8c" }}
-            interval={4}
+            interval={3}
           />
           <YAxis
             fontSize={11}
@@ -251,7 +294,15 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
               const label = name === "current" ? "Este mes" : name === "previous" ? "Mes passado" : "Media 3 meses";
               return [r(v), label];
             }}
-            labelFormatter={(l) => `Dia ${l}`}
+            labelFormatter={(l) => {
+              const day = Number(l);
+              if (!data.month || !Number.isFinite(day)) return `Dia ${l}`;
+              const [yy, mm] = data.month.split("-").map(Number);
+              const dt = new Date(Date.UTC(yy, (mm ?? 1) - 1, day));
+              const meses = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+              const dow = ["dom", "seg", "ter", "qua", "qui", "sex", "sáb"][dt.getUTCDay()];
+              return `Dia ${day} · ${dow}, ${day} de ${meses[(mm ?? 1) - 1]} ${yy}`;
+            }}
             contentStyle={{
               background: "#fff",
               border: "none",
@@ -259,6 +310,7 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
               boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
               fontSize: 13,
             }}
+            labelStyle={{ color: "#1f1f1f", fontWeight: 600, marginBottom: 4 }}
           />
 
           {/* Average 3 months - dashed blue */}
@@ -313,8 +365,12 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
             <Label
               position="top"
               offset={14}
-              content={({ viewBox }) => {
-                const vb = viewBox as { x?: number; y?: number; width?: number; height?: number };
+              content={(props: unknown) => {
+                const p = props as {
+                  viewBox?: { x?: number; y?: number; width?: number; height?: number };
+                  offset?: number;
+                };
+                const vb = p.viewBox ?? {};
                 const dotX = (vb.x ?? 0) + (vb.width ?? 0) / 2;
                 const dotTopY = vb.y ?? 0;
                 const text = diff != null
@@ -326,21 +382,57 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
                 const h = 24;
                 const rx = 12;
                 const tipX = dotX;
-                const triH = 8;
-                const tipY = dotTopY;
-                const baseY = tipY - triH;
-                const cardOverlap = 4;
-                const y = baseY + cardOverlap - h;
-                const x = tipX - 14;
+                const dotTop = dotTopY;
+                const dotBottom = dotTopY + 10; // dot has r=5
+                const gap = 8;
+                const chartTop = 10; // AreaChart margin.top
+                // Default: pill above the dot. If it would overflow the chart top, flip below.
+                let yBox = dotTop - gap - h;
+                let placeAbove = true;
+                if (yBox < chartTop + 2) {
+                  placeAbove = false;
+                  yBox = dotBottom + gap;
+                }
+                const tipY = placeAbove ? dotTop : dotBottom;
+                const pillBottom = placeAbove ? yBox + h : yBox; // edge of pill that the triangle base sits on
+                // Pill ABOVE the dot. Triangle anchored at the dot pointing down.
+                // Pill is indented LEFT or RIGHT depending on which half the dot is in:
+                //   dot in RIGHT half → pill extends LEFT (triangle near pill's right edge)
+                //   dot in LEFT  half → pill extends RIGHT (triangle near pill's left edge)
+                const baseHalf = 7;
+                const triPadRight = 6; // pill extends LEFT of dot — pad between triangle right and pill right
+                const triPadLeft  = 6; // mirror of triPadRight — pill's left edge sits 6px past the triangle base so the rounded corner fully covers it
+                const chartLeft = 65 + 10;
+                const chartRight = (chartContainerWidth || 9999) - 6;
+                const chartCenter = (chartLeft + chartRight) / 2;
+                const xLeft  = tipX + baseHalf + triPadRight - w; // pill right edge ≈ triangle right + pad
+                const xRight = tipX - baseHalf - triPadLeft;      // pill left  edge ≈ triangle left  - pad (tight)
+                const fitsLeft  = xLeft  >= chartLeft + 2 && xLeft  + w <= chartRight - 2;
+                const fitsRight = xRight >= chartLeft + 2 && xRight + w <= chartRight - 2;
+                const preferLeft = tipX >= chartCenter;
+                // Hard requirement: triangle base [tipX-baseHalf, tipX+baseHalf] must sit inside the pill.
+                const triMinX = tipX + baseHalf - w; // pill x lower bound to contain triangle
+                const triMaxX = tipX - baseHalf;     // pill x upper bound to contain triangle
+                let x: number;
+                if (preferLeft && fitsLeft) x = xLeft;
+                else if (!preferLeft && fitsRight) x = xRight;
+                else if (fitsLeft) x = xLeft;
+                else if (fitsRight) x = xRight;
+                else {
+                  // Neither indented side fits the chart. Allow chart overflow so the
+                  // triangle base stays fully inside the pill — visual coherence wins.
+                  const desired = preferLeft ? xLeft : xRight;
+                  x = Math.max(triMinX, Math.min(desired, triMaxX));
+                }
                 return (
                   <g>
-                    <rect x={x} y={y} width={w} height={h} rx={rx} ry={rx}
+                    <rect x={x} y={yBox} width={w} height={h} rx={rx} ry={rx}
                       fill={currentColor} />
                     <polygon
-                      points={`${tipX - 9},${baseY} ${tipX + 9},${baseY} ${tipX},${tipY}`}
+                      points={`${tipX - baseHalf},${pillBottom + (placeAbove ? -0.5 : 0.5)} ${tipX + baseHalf},${pillBottom + (placeAbove ? -0.5 : 0.5)} ${tipX},${tipY}`}
                       fill={currentColor}
                     />
-                    <text x={x + w / 2} y={y + h / 2 + 4} textAnchor="middle"
+                    <text x={x + w / 2} y={yBox + h / 2 + 4} textAnchor="middle"
                       style={{ fontSize: 11, fontWeight: 600, fill: "#fff" }}>
                       {text}
                     </text>
@@ -351,6 +443,7 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
           </ReferenceDot>
         </AreaChart>
       </ResponsiveContainer>
+      </div>
 
       {/* Legend */}
       <div style={{ display: "flex", gap: 20, marginTop: 12, paddingLeft: 10 }}>
@@ -382,12 +475,13 @@ const BUCKET_COLORS: Record<string, { bar: string; bg: string }> = {
   liberdade_financeira: { bar: "#52c41a", bg: "rgba(82, 196, 26, 0.08)" },
 };
 
-function BucketRow({ bucket, provisioned = 0, pendingTargetPct, isPositiveBucket, onTargetChange }: {
+function BucketRow({ bucket, provisioned = 0, pendingTargetPct, isPositiveBucket, onTargetChange, onDrilldown }: {
   bucket: ReturnType<typeof getBucketProgress>[0];
   provisioned?: number;
   pendingTargetPct?: number;
   isPositiveBucket?: boolean;
   onTargetChange?: (pct: number) => void;
+  onDrilldown?: () => void;
 }) {
   const { token } = theme.useToken();
   const { redacted } = useRedact();
@@ -532,6 +626,19 @@ function BucketRow({ bucket, provisioned = 0, pendingTargetPct, isPositiveBucket
               <span> {formatPercent(bucket.targetPct)}</span>
             )}
           </span>
+          {onDrilldown && (
+            <span
+              onClick={onDrilldown}
+              title="Ver transacoes"
+              style={{
+                cursor: "pointer", color: "#8c8c8c",
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                width: 22, height: 22, borderRadius: 4,
+              }}
+            >
+              <List size={14} />
+            </span>
+          )}
         </div>
       </div>
     </div>
@@ -547,8 +654,9 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
   const income = summary.total_income;
   const expenses = summary.total_expenses;
   const net = summary.net;
-  const prevNet = previousData ? getBudgetSummary(previousData).net : null;
-  const netVariation = prevNet != null && prevNet !== 0 ? ((net - prevNet) / Math.abs(prevNet)) * 100 : null;
+  const prevSummary = previousData ? getBudgetSummary(previousData) : null;
+  const prevExpenses = prevSummary ? prevSummary.total_expenses : null;
+  const expensesVariation = prevExpenses != null && prevExpenses !== 0 ? ((expenses - prevExpenses) / Math.abs(prevExpenses)) * 100 : null;
 
   // Provisioned amount per category (sum of transactions flagged as provisional)
   const provisionedByCat = useMemo(() => {
@@ -630,23 +738,57 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
     });
   }, [data, customPcts, income, net, provisionedByCat]);
 
+  // Total still available across all buckets (sum of remaining target - actual, only positives).
+  const totalAvailable = buckets.reduce((s, b) => s + Math.max(b.targetAmount - b.actualAmount, 0), 0);
+  const allBucketsFull = totalAvailable <= 0.01;
+
+  // Bucket drilldown: open modal with bucket transactions
+  const [bucketDrilldown, setBucketDrilldown] = useState<string | null>(null);
+  const allFlat = useMemo(() => flattenTransactions(data), [data]);
+  const bucketDrilldownTx = useMemo(() => {
+    if (!bucketDrilldown) return [];
+    const b = buckets.find((x) => x.key === bucketDrilldown);
+    if (!b) return [];
+    const cats = new Set(b.categories);
+    return allFlat.filter((t) => t.category && cats.has(t.category));
+  }, [bucketDrilldown, buckets, allFlat]);
+
   return (
     <VisorCard>
       <SectionHead title="Resultado Parcial" linkText="fluxo de caixa" href="/cashflow" />
 
-      {/* Big value */}
-      <div style={{ marginBottom: 8 }}>
+      {/* Big value: total expenses (real + provisioned). Pill shows remaining bucket capacity. */}
+      <div style={{ marginBottom: 8, display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
         <span style={{ fontSize: 32, fontWeight: 300, color: token.colorText }}>
-          {r(net)}
+          {r(expenses)}
+        </span>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            fontSize: 11,
+            fontWeight: 600,
+            lineHeight: 1.4,
+            padding: "2px 8px",
+            borderRadius: 999,
+            color: allBucketsFull ? "#ff4d4f" : "#52c41a",
+            background: allBucketsFull ? "rgba(255,77,79,0.12)" : "rgba(82,196,26,0.12)",
+            border: `1px solid ${allBucketsFull ? "rgba(255,77,79,0.35)" : "rgba(82,196,26,0.35)"}`,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {allBucketsFull
+            ? "buckets esgotados"
+            : `${r(totalAvailable)} disponivel nos buckets`}
         </span>
       </div>
 
       {/* Variation badge */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
-        {netVariation != null && <PercentChange value={netVariation} />}
-        {prevNet != null && (
+        {expensesVariation != null && <PercentChange value={expensesVariation} invert />}
+        {prevExpenses != null && (
           <span style={{ fontSize: 13, color: "#8c8c8c" }}>
-            vs {r(prevNet!)} mes anterior
+            vs {r(prevExpenses!)} mes anterior
           </span>
         )}
       </div>
@@ -696,8 +838,8 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
           )}
         </div>
         <div>
-          <div style={{ fontSize: 11, color: "#8c8c8c", marginBottom: 2 }}>Excluido</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{r(summary.investment)}</div>
+          <div style={{ fontSize: 11, color: "#8c8c8c", marginBottom: 2 }}>Net</div>
+          <div style={{ fontSize: 15, fontWeight: 600, color: net < 0 ? "#ff4d4f" : token.colorText }}>{r(net)}</div>
         </div>
       </div>
 
@@ -729,9 +871,22 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
             pendingTargetPct={pendingPcts[b.key]}
             isPositiveBucket={b.key === "liberdade_financeira"}
             onTargetChange={(pct) => handlePctInput(b.key, pct)}
+            onDrilldown={() => setBucketDrilldown(b.key)}
           />
         ))}
       </div>
+
+      <Modal
+        open={bucketDrilldown != null}
+        onCancel={() => setBucketDrilldown(null)}
+        footer={null}
+        width="80%"
+        destroyOnHidden
+        title={bucketDrilldown ? `Bucket: ${buckets.find(b => b.key === bucketDrilldown)?.name ?? ""} — ${bucketDrilldownTx.length} transacoes` : ""}
+        styles={{ body: { padding: 16 } }}
+      >
+        <TransactionsTable transactions={bucketDrilldownTx} redacted={redacted} pageSize={50} />
+      </Modal>
     </VisorCard>
   );
 }
@@ -1392,7 +1547,7 @@ function AccountBillsCard({ data }: { data: BudgetData }) {
 /* ── Top 10 Categorias ───────────────────────────────────────── */
 type TopCatView = "top10" | "highest" | "lowest";
 
-function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousData: BudgetData | null }) {
+function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData; previousData: BudgetData | null; allMonths: BudgetData[] }) {
   const { token } = theme.useToken();
   const { redacted } = useRedact();
   const r = (v: number) => redacted ? REDACTED : formatBRL(v);
@@ -1401,6 +1556,7 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
   const [viewMode, setViewMode] = useState<TopCatView>("top10");
   const [drilldownCat, setDrilldownCat] = useState<string | null>(null);
   const [drilldownFilters, setDrilldownFilters] = useState<TransactionFilters>(DEFAULT_FILTERS);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
 
   const allFlat = useMemo(() => flattenTransactions(data), [data]);
   const drilldownBaseTx = useMemo(
@@ -1518,6 +1674,18 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
               { label: "Maior queda", value: "lowest" },
             ]}
           />
+          <span
+            onClick={() => setComparisonOpen(true)}
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              fontSize: 12, color: "#6366f1", cursor: "pointer", fontWeight: 500,
+              padding: "2px 8px", borderRadius: 6,
+              border: "1px solid rgba(99,102,241,0.3)",
+              background: "rgba(99,102,241,0.08)",
+            }}
+          >
+            <List size={12} /> Comparar meses
+          </span>
         </div>
       </div>
 
@@ -1758,7 +1926,244 @@ function TopCategoriesCard({ data, previousData }: { data: BudgetData; previousD
         />
         <TransactionsTable transactions={drilldownTx} redacted={redacted} pageSize={50} />
       </Modal>
+
+      <CategoryComparisonModal
+        open={comparisonOpen}
+        onClose={() => setComparisonOpen(false)}
+        currentMonth={data.month}
+        allMonths={allMonths}
+        redacted={redacted}
+      />
     </VisorCard>
+  );
+}
+
+/* ── Category Comparison Modal ────────────────────────────────── */
+function CategoryComparisonModal({
+  open, onClose, currentMonth, allMonths, redacted,
+}: {
+  open: boolean;
+  onClose: () => void;
+  currentMonth: string;
+  allMonths: BudgetData[];
+  redacted: boolean;
+}) {
+  const { token } = theme.useToken();
+  const r = (v: number) => redacted ? REDACTED : formatBRL(v);
+
+  // Sort months ascending and limit to last 12 for readability
+  const months = useMemo(() => {
+    const sorted = [...allMonths].sort((a, b) => a.month.localeCompare(b.month));
+    return sorted.slice(-12);
+  }, [allMonths]);
+
+  // Build category totals per month
+  const grid = useMemo(() => {
+    const catSet = new Set<string>();
+    const perMonth: Record<string, Record<string, number>> = {};
+    const incomeByMonth: Record<string, number> = {};
+    const expensesByMonth: Record<string, number> = {};
+    for (const m of months) {
+      const cats: Record<string, number> = {};
+      let monthExpenses = 0;
+      for (const [name, cat] of Object.entries(m.expenses?.by_category ?? {})) {
+        let total = 0;
+        for (const sub of Object.values(cat.subcategories)) {
+          for (const tx of sub.transactions) total += tx.amount;
+        }
+        cats[name] = Math.round(total * 100) / 100;
+        catSet.add(name);
+        monthExpenses += total;
+      }
+      perMonth[m.month] = cats;
+      const summ = getBudgetSummary(m);
+      incomeByMonth[m.month] = Math.round(summ.total_income * 100) / 100;
+      expensesByMonth[m.month] = Math.round(monthExpenses * 100) / 100;
+    }
+    // Compute per-category total over selected window for sorting
+    const categories = [...catSet].sort((a, b) => {
+      const ta = months.reduce((s, m) => s + (perMonth[m.month][a] ?? 0), 0);
+      const tb = months.reduce((s, m) => s + (perMonth[m.month][b] ?? 0), 0);
+      return Math.abs(tb) - Math.abs(ta);
+    });
+    return { categories, perMonth, incomeByMonth, expensesByMonth };
+  }, [months]);
+
+  const monthLabel = (m: string) => {
+    const [y, mm] = m.split("-").map(Number);
+    const names = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+    return `${names[(mm ?? 1) - 1]}/${String(y).slice(2)}`;
+  };
+
+  // Color scale based on value relative to category's max across months
+  const cellBg = (val: number, max: number) => {
+    if (val === 0 || max === 0) return "transparent";
+    const intensity = Math.min(1, Math.abs(val) / max);
+    const isNeg = val < 0;
+    const alpha = 0.05 + intensity * 0.35;
+    return isNeg
+      ? `rgba(82,196,26,${alpha.toFixed(2)})`   // green for refunds/credits
+      : `rgba(250,140,22,${alpha.toFixed(2)})`; // orange-ish for expenses
+  };
+
+  return (
+    <Modal
+      open={open}
+      onCancel={onClose}
+      footer={null}
+      width="90%"
+      destroyOnHidden
+      title="Comparativo de Categorias por Mes"
+      styles={{ body: { padding: 16, maxHeight: "75vh", overflow: "auto" } }}
+    >
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0, fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={{
+                position: "sticky", left: 0, top: 0, zIndex: 3,
+                background: token.colorBgElevated, padding: "8px 10px",
+                textAlign: "left", borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                minWidth: 200,
+              }}>Categoria</th>
+              {months.map((m) => (
+                <th key={m.month} style={{
+                  position: "sticky", top: 0, zIndex: 2,
+                  background: token.colorBgElevated, padding: "8px 10px",
+                  textAlign: "right", borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                  fontWeight: m.month === currentMonth ? 700 : 500,
+                  color: m.month === currentMonth ? "#6366f1" : token.colorText,
+                  whiteSpace: "nowrap",
+                }}>
+                  {monthLabel(m.month)}
+                </th>
+              ))}
+              <th style={{
+                position: "sticky", top: 0, zIndex: 2,
+                background: token.colorBgElevated, padding: "8px 10px",
+                textAlign: "right", borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                fontWeight: 700, whiteSpace: "nowrap",
+              }}>Media</th>
+              <th style={{
+                position: "sticky", top: 0, zIndex: 2,
+                background: token.colorBgElevated, padding: "8px 10px",
+                textAlign: "right", borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                fontWeight: 700, whiteSpace: "nowrap",
+              }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(() => {
+              // Build summary rows: Receita (income, green) and Total Despesas (orange).
+              const incomeVals = months.map((m) => grid.incomeByMonth[m.month] ?? 0);
+              const expensesVals = months.map((m) => grid.expensesByMonth[m.month] ?? 0);
+              const sumRow = (label: string, vals: number[], color: string, bgRgba: string) => {
+                const sum = vals.reduce((s, v) => s + v, 0);
+                const nz = vals.filter(v => v !== 0).length;
+                const avg = nz > 0 ? sum / nz : 0;
+                return (
+                  <tr key={label}>
+                    <td style={{
+                      position: "sticky", left: 0, zIndex: 1,
+                      background: bgRgba, padding: "8px 10px",
+                      borderTop: `2px solid ${color}`,
+                      borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                      whiteSpace: "nowrap", fontWeight: 700, color,
+                    }}>
+                      {label}
+                    </td>
+                    {months.map((m, i) => (
+                      <td key={m.month} style={{
+                        padding: "8px 10px", textAlign: "right",
+                        borderTop: `2px solid ${color}`,
+                        borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                        background: bgRgba,
+                        color, fontWeight: m.month === currentMonth ? 700 : 600,
+                        whiteSpace: "nowrap",
+                      }}>
+                        {vals[i] === 0 ? "—" : r(vals[i])}
+                      </td>
+                    ))}
+                    <td style={{
+                      padding: "8px 10px", textAlign: "right",
+                      borderTop: `2px solid ${color}`,
+                      borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                      background: bgRgba, fontWeight: 700, color, whiteSpace: "nowrap",
+                    }}>
+                      {r(avg)}
+                    </td>
+                    <td style={{
+                      padding: "8px 10px", textAlign: "right",
+                      borderTop: `2px solid ${color}`,
+                      borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                      background: bgRgba, fontWeight: 700, color, whiteSpace: "nowrap",
+                    }}>
+                      {r(sum)}
+                    </td>
+                  </tr>
+                );
+              };
+              return [
+                sumRow("💰 Receita", incomeVals, "#52c41a", "rgba(82,196,26,0.08)"),
+                sumRow("💸 Total Despesas", expensesVals, "#fa541c", "rgba(250,84,28,0.08)"),
+                <tr key="spacer-after-summary"><td colSpan={months.length + 3} style={{ height: 16, border: "none", background: "transparent" }} /></tr>,
+              ];
+            })()}
+            {grid.categories.map((cat) => {
+              const { emoji } = getCategoryMeta(cat);
+              const vals = months.map((m) => grid.perMonth[m.month][cat] ?? 0);
+              const max = Math.max(...vals.map(Math.abs));
+              const sum = vals.reduce((s, v) => s + v, 0);
+              const nonZero = vals.filter(v => v !== 0).length;
+              const avg = nonZero > 0 ? sum / nonZero : 0;
+              return (
+                <tr key={cat}>
+                  <td style={{
+                    position: "sticky", left: 0, zIndex: 1,
+                    background: token.colorBgElevated, padding: "6px 10px",
+                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                    whiteSpace: "nowrap",
+                  }}>
+                    <span style={{ marginRight: 6 }}>{emoji}</span>{cat}
+                  </td>
+                  {months.map((m, i) => {
+                    const v = vals[i];
+                    return (
+                      <td key={m.month} style={{
+                        padding: "6px 10px", textAlign: "right",
+                        borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                        background: cellBg(v, max),
+                        color: v < 0 ? "#52c41a" : token.colorText,
+                        fontWeight: m.month === currentMonth ? 600 : 400,
+                        whiteSpace: "nowrap",
+                      }}>
+                        {v === 0 ? "—" : r(v)}
+                      </td>
+                    );
+                  })}
+                  <td style={{
+                    padding: "6px 10px", textAlign: "right",
+                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                    fontWeight: 600, whiteSpace: "nowrap",
+                    color: avg < 0 ? "#52c41a" : token.colorText,
+                  }}>
+                    {r(avg)}
+                  </td>
+                  <td style={{
+                    padding: "6px 10px", textAlign: "right",
+                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                    fontWeight: 700, whiteSpace: "nowrap",
+                    color: sum < 0 ? "#52c41a" : token.colorText,
+                  }}>
+                    {r(sum)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </Modal>
   );
 }
 
@@ -2121,6 +2526,366 @@ function MonthCompositionCard({ data }: { data: BudgetData }) {
   );
 }
 
+/* ── Top 10 Categorias - Linha temporal ───────────────────────── */
+function TopCategoriesTrendCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; currentMonth: string }) {
+  const { token } = theme.useToken();
+  const { redacted } = useRedact();
+  const r = (v: number) => redacted ? REDACTED : formatBRL(v);
+
+  const [excludeCurrent, setExcludeCurrent] = useState(false);
+
+  // Sort months ascending, last 12. Optionally drop the current month.
+  const months = useMemo(() => {
+    let sorted = [...allMonths].sort((a, b) => a.month.localeCompare(b.month));
+    if (excludeCurrent) sorted = sorted.filter((m) => m.month !== currentMonth);
+    return sorted.slice(-12);
+  }, [allMonths, excludeCurrent, currentMonth]);
+
+  // Aggregate per month per category, then pick top-10 by total over the window.
+  const { topCategories, chartData, totalsMap } = useMemo(() => {
+    const totals: Record<string, number> = {};
+    const perMonth: Record<string, Record<string, number>> = {};
+    for (const m of months) {
+      const cats: Record<string, number> = {};
+      for (const [name, cat] of Object.entries(m.expenses?.by_category ?? {})) {
+        let total = 0;
+        for (const sub of Object.values(cat.subcategories)) {
+          for (const tx of sub.transactions) total += tx.amount;
+        }
+        const v = Math.round(total * 100) / 100;
+        cats[name] = v;
+        totals[name] = (totals[name] ?? 0) + v;
+      }
+      perMonth[m.month] = cats;
+    }
+    const top = Object.entries(totals)
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+      .slice(0, 10)
+      .map(([name]) => name);
+    const monthLabels = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+    const data = months.map((m) => {
+      const [y, mm] = m.month.split("-").map(Number);
+      const row: Record<string, string | number> = {
+        month: m.month,
+        label: `${monthLabels[(mm ?? 1) - 1]}/${String(y).slice(2)}`,
+      };
+      for (const cat of top) row[cat] = perMonth[m.month][cat] ?? 0;
+      return row;
+    });
+    return { topCategories: top, chartData: data, totalsMap: totals };
+  }, [months]);
+
+  // Stable color palette for up to 10 lines.
+  const PALETTE = [
+    "#4096ff", "#fa8c16", "#52c41a", "#722ed1", "#eb2f96",
+    "#13c2c2", "#fa541c", "#a0d911", "#1d3557", "#f5222d",
+  ];
+
+  // Visibility per category (default: all visible).
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const toggleCat = useCallback((cat: string) => {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(cat)) next.delete(cat); else next.add(cat);
+      return next;
+    });
+  }, []);
+
+  // Highlighted category (hover or pinned via click)
+  const [hoveredCat, setHoveredCat] = useState<string | null>(null);
+  const [pinnedCat, setPinnedCat] = useState<string | null>(null);
+  const highlighted = hoveredCat ?? pinnedCat;
+  const togglePin = useCallback((cat: string) => {
+    setPinnedCat((prev) => (prev === cat ? null : cat));
+  }, []);
+
+  const visibleSum = topCategories.reduce(
+    (s, c) => (hidden.has(c) ? s : s + (totalsMap[c] ?? 0)),
+    0
+  );
+
+  return (
+    <VisorCard>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <SectionHead title="Top 10 Categorias - Evolucao" />
+        <label style={{
+          display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer",
+          fontSize: 12, color: "#8c8c8c", userSelect: "none",
+        }}>
+          <Checkbox checked={excludeCurrent} onChange={(e) => setExcludeCurrent(e.target.checked)} />
+          Desconsiderar mes atual
+        </label>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 16, marginTop: 12, alignItems: "stretch" }}>
+        <div style={{ height: 520 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ left: 10, right: 20, top: 10, bottom: 5 }}>
+              <CartesianGrid stroke="rgba(140,140,140,0.15)" strokeDasharray="3 3" vertical={false} />
+              <XAxis
+                dataKey="label"
+                fontSize={11}
+                tickLine={false}
+                axisLine={{ stroke: "#e8e8e8" }}
+                tick={{ fill: "#8c8c8c" }}
+              />
+              <YAxis
+                fontSize={11}
+                tickLine={false}
+                axisLine={false}
+                tick={{ fill: "#8c8c8c" }}
+                tickFormatter={(v) => redacted ? "•••" : `R$ ${(v / 1000).toFixed(0)}k`}
+                width={70}
+              />
+              <Tooltip
+                formatter={(v: number, name: string) => [r(v), name]}
+                labelFormatter={(l) => `Mes: ${l}`}
+                contentStyle={{
+                  background: "#fff",
+                  border: "none",
+                  borderRadius: 8,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                  fontSize: 12,
+                }}
+                labelStyle={{ color: "#1f1f1f", fontWeight: 600, marginBottom: 4 }}
+              />
+              {topCategories.map((cat, i) => {
+                if (hidden.has(cat)) return null;
+                const { emoji } = getCategoryMeta(cat);
+                const color = PALETTE[i % PALETTE.length];
+                const isHighlighted = highlighted === cat;
+                const dimmed = highlighted != null && !isHighlighted;
+                return (
+                  <Line
+                    key={cat}
+                    type="monotone"
+                    dataKey={cat}
+                    name={`${emoji} ${cat}`}
+                    stroke={color}
+                    strokeWidth={isHighlighted ? 3.5 : 2}
+                    strokeOpacity={dimmed ? 0.18 : 1}
+                    dot={{ r: isHighlighted ? 4 : 3, fill: color, strokeWidth: 0, fillOpacity: dimmed ? 0.18 : 1 }}
+                    activeDot={{ r: isHighlighted ? 6 : 5 }}
+                    connectNulls
+                    isAnimationActive={false}
+                  />
+                );
+              })}
+              {currentMonth && (
+                <ReferenceLine
+                  x={(() => {
+                    const m = chartData.find((d) => d.month === currentMonth);
+                    return m ? (m.label as string) : undefined;
+                  })()}
+                  stroke="#6366f1"
+                  strokeDasharray="4 4"
+                  label={{ value: "atual", position: "top", fill: "#6366f1", fontSize: 10 }}
+                />
+              )}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Side card: top 10 totals + toggles */}
+        <div style={{
+          background: token.colorBgElevated,
+          borderRadius: 8,
+          padding: "14px 16px",
+          border: `1px solid ${token.colorBorderSecondary}`,
+          display: "flex", flexDirection: "column", gap: 8,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#8c8c8c" }}>
+              Soma (visiveis)
+            </span>
+            <span style={{ fontSize: 16, fontWeight: 700, color: visibleSum < 0 ? "#52c41a" : token.colorText }}>
+              {r(visibleSum)}
+            </span>
+          </div>
+          <div style={{ display: "flex", gap: 10, fontSize: 11, marginBottom: 6 }}>
+            <span
+              onClick={() => setHidden(new Set())}
+              style={{ color: "#6366f1", cursor: "pointer", textDecoration: "underline" }}
+            >
+              marcar todas
+            </span>
+            <span
+              onClick={() => setHidden(new Set(topCategories))}
+              style={{ color: "#6366f1", cursor: "pointer", textDecoration: "underline" }}
+            >
+              desmarcar todas
+            </span>
+          </div>
+          <div style={{ borderTop: `1px solid ${token.colorBorderSecondary}`, marginBottom: 4 }} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minHeight: 0, overflowY: "auto" }}>
+            {topCategories.map((cat, i) => {
+              const { emoji } = getCategoryMeta(cat);
+              const color = PALETTE[i % PALETTE.length];
+              const total = totalsMap[cat] ?? 0;
+              const isHidden = hidden.has(cat);
+              const isHighlighted = highlighted === cat;
+              const isPinned = pinnedCat === cat;
+              return (
+                <div
+                  key={cat}
+                  onMouseEnter={() => !isHidden && setHoveredCat(cat)}
+                  onMouseLeave={() => setHoveredCat(null)}
+                  onClick={() => togglePin(cat)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "6px 8px", borderRadius: 6, cursor: "pointer",
+                    background: isHighlighted
+                      ? `${color}1f`
+                      : isHidden ? "transparent" : "rgba(99,102,241,0.04)",
+                    border: isPinned ? `1px solid ${color}` : "1px solid transparent",
+                    opacity: isHidden ? 0.4 : 1,
+                    transition: "background 0.15s, opacity 0.15s, border-color 0.15s",
+                  }}
+                >
+                  <Checkbox checked={!isHidden} onChange={() => toggleCat(cat)} onClick={(e) => e.stopPropagation()} />
+                  <span style={{ width: 10, height: 10, borderRadius: 2, background: color, flexShrink: 0 }} />
+                  <span style={{ fontSize: 13, flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontWeight: isHighlighted ? 600 : 400 }}>
+                    {emoji} {cat}
+                  </span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: total < 0 ? "#52c41a" : token.colorText }}>
+                    {r(total)}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </VisorCard>
+  );
+}
+
+/* ── Receita por mes ──────────────────────────────────────────── */
+function IncomeBarCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; currentMonth: string }) {
+  const { token } = theme.useToken();
+  const { redacted } = useRedact();
+  const r = (v: number) => redacted ? REDACTED : formatBRL(v);
+
+  const months = useMemo(() => {
+    return [...allMonths].sort((a, b) => a.month.localeCompare(b.month)).slice(-12);
+  }, [allMonths]);
+
+  const monthLabels = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
+  const labelOf = (m: string) => {
+    const [y, mm] = m.split("-").map(Number);
+    return `${monthLabels[(mm ?? 1) - 1]}/${String(y).slice(2)}`;
+  };
+
+  const chartData = useMemo(() => {
+    return months.map((m) => ({
+      month: m.month,
+      label: labelOf(m.month),
+      income: Math.round(getBudgetSummary(m).total_income * 100) / 100,
+    }));
+  }, [months]);
+
+  const [selectedMonth, setSelectedMonth] = useState<string>(currentMonth);
+  useEffect(() => { setSelectedMonth(currentMonth); }, [currentMonth]);
+
+  const selectedBudget = useMemo(
+    () => months.find((m) => m.month === selectedMonth) ?? null,
+    [months, selectedMonth]
+  );
+
+  const incomeTx = useMemo(() => {
+    if (!selectedBudget) return [];
+    const flat = flattenTransactions(selectedBudget);
+    return flat.filter((t) => t.type === "income");
+  }, [selectedBudget]);
+
+  return (
+    <VisorCard>
+      <SectionHead title="Receita por mes" />
+      <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>
+        <div style={{ height: 320 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={chartData} margin={{ left: 10, right: 20, top: 10, bottom: 5 }}>
+              <CartesianGrid stroke="rgba(140,140,140,0.15)" strokeDasharray="3 3" vertical={false} />
+              <XAxis
+                dataKey="label"
+                fontSize={11}
+                tickLine={false}
+                axisLine={{ stroke: "#e8e8e8" }}
+                tick={{ fill: "#8c8c8c" }}
+              />
+              <YAxis
+                fontSize={11}
+                tickLine={false}
+                axisLine={false}
+                tick={{ fill: "#8c8c8c" }}
+                tickFormatter={(v) => redacted ? "•••" : `R$ ${(v / 1000).toFixed(0)}k`}
+                width={70}
+              />
+              <Tooltip
+                formatter={(v: number) => [r(v), "Receita"]}
+                labelFormatter={(l) => `Mes: ${l}`}
+                cursor={{ fill: "rgba(99,102,241,0.06)" }}
+                contentStyle={{
+                  background: "#fff",
+                  border: "none",
+                  borderRadius: 8,
+                  boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+                  fontSize: 12,
+                }}
+                labelStyle={{ color: "#1f1f1f", fontWeight: 600, marginBottom: 4 }}
+              />
+              <Bar
+                dataKey="income"
+                radius={[4, 4, 0, 0]}
+                onClick={(d: { month?: string }) => { if (d?.month) setSelectedMonth(d.month); }}
+              >
+                {chartData.map((d) => (
+                  <Cell
+                    key={d.month}
+                    fill={d.month === selectedMonth ? "#52c41a" : "rgba(82,196,26,0.45)"}
+                    cursor="pointer"
+                  />
+                ))}
+                <LabelList
+                  dataKey="income"
+                  position="top"
+                  style={{ fontSize: 11, fontWeight: 600, fill: "#52c41a" }}
+                  formatter={(v: number) => redacted ? "•••" : `R$ ${(v / 1000).toFixed(1)}k`}
+                />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Income table for selected month */}
+        <div style={{
+          background: token.colorBgElevated,
+          borderRadius: 8,
+          padding: "14px 16px",
+          border: `1px solid ${token.colorBorderSecondary}`,
+          display: "flex", flexDirection: "column", gap: 8,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#8c8c8c" }}>
+              Receita {labelOf(selectedMonth)}
+            </span>
+            <span style={{ fontSize: 16, fontWeight: 700, color: "#52c41a" }}>
+              {r(incomeTx.reduce((s, t) => s + t.amount, 0))}
+            </span>
+          </div>
+          <div style={{ borderTop: `1px solid ${token.colorBorderSecondary}`, marginBottom: 4 }} />
+          <div>
+            {incomeTx.length === 0 ? (
+              <div style={{ fontSize: 12, color: "#8c8c8c", padding: 8, textAlign: "center" }}>Sem receitas neste mes</div>
+            ) : (
+              <TransactionsTable transactions={incomeTx} redacted={redacted} pageSize={50} showCard={false} />
+            )}
+          </div>
+        </div>
+      </div>
+    </VisorCard>
+  );
+}
+
 /* ── Main Page ────────────────────────────────────────────────── */
 export default function OverviewPage() {
   const { data: activeData, allMonths, loading, refresh } = useBudget();
@@ -2176,15 +2941,15 @@ export default function OverviewPage() {
         <MonthSelector months={monthPills} selected={data.month} onSelect={setSelectedMonth} />
       </div>
 
-      {/* Top row: Ritmo + Resultado */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+      {/* Top row: Ritmo + Resultado (equal heights) */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16, alignItems: "stretch" }}>
         <SpendingPaceCard data={data} previousData={previousData} allMonths={allMonths} />
         <PartialResultCard data={data} previousData={previousData} />
       </div>
 
       {/* Row 2: Principais Categorias + Visao de Contas */}
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 0.7fr", gap: 16, marginTop: 16, alignItems: "stretch" }}>
-        <TopCategoriesCard data={data} previousData={previousData} />
+        <TopCategoriesCard data={data} previousData={previousData} allMonths={allMonths} />
         <AccountBillsCard data={data} />
       </div>
 
@@ -2197,6 +2962,16 @@ export default function OverviewPage() {
       {/* Categorias */}
       <div style={{ marginTop: 16 }}>
         <CategoriesCard data={data} previousData={previousData} />
+      </div>
+
+      {/* Top 10 Categorias - evolucao temporal */}
+      <div style={{ marginTop: 16 }}>
+        <TopCategoriesTrendCard allMonths={allMonths} currentMonth={data.month} />
+      </div>
+
+      {/* Receita por mes (bar chart + tabela do mes selecionado) */}
+      <div style={{ marginTop: 16 }}>
+        <IncomeBarCard allMonths={allMonths} currentMonth={data.month} />
       </div>
 
       {/* Refresh modal */}
