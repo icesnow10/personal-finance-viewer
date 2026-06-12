@@ -66,27 +66,24 @@ Pure functions over `BudgetData` used by pages:
 | `ThemeContext` | Ant Design light/dark mode toggle |
 | `RedactContext` | Hides monetary values (eye toggle in header) |
 
+### Responsive layout
+
+`useIsMobile` (`src/hooks/useIsMobile.ts`) is a `matchMedia(max-width: 767px)` hook used across pages. `AppShell` switches to a mobile layout below 768px: the left `Sider` is hidden and a fixed bottom navigation (`/overview`, `/transactions`, `/investments`, `/settings`) replaces it. `Content` adds bottom padding equal to the nav height (64px) plus `env(safe-area-inset-bottom)`. Pages collapse two-column grids to a single column at the same breakpoint and `VisorCard` reduces internal padding.
+
 ### Pages
 
 | Route | File | What it renders |
 |---|---|---|
-| `/overview` | `src/pages/overview/index.tsx` | Spending pace, budget buckets, category tree, installments + monthly composition (à vista / parcela nova / parcela antiga) |
+| `/overview` | `src/pages/overview/index.tsx` | Spending pace, budget buckets, category tree, installments + monthly composition (à vista / parcela nova / parcela antiga), top-10 categories trend, monthly income bars, wealth evolution (cumulative monthly net) |
 | `/transactions-v2` | `src/pages/transactions-v2/index.tsx` | Searchable/filterable flat transaction table |
 | `/income` | `src/pages/income/index.tsx` | Income breakdown by month and source |
 | `/settings` | `src/pages/settings/index.tsx` | Resources path configuration (writes `.config.json`) |
 
-### Prompt shortcuts (top-bar modal)
+### Scheduled prompts (top-bar modal)
 
-Terminal icon in the header opens `PromptShortcutModal` (`src/components/PromptShortcutModal.tsx`), which has two tabs:
+Terminal icon in the header opens `PromptShortcutModal` (`src/components/PromptShortcutModal.tsx`), which lists cron-scheduled prompt runs via `node-cron` (`src/lib/scheduler.ts`). Schedules persist to `.pfv-schedules.json` (gitignored) and are re-registered on every server start. Timezone: America/Sao_Paulo.
 
-**Presets** — fire-and-forget terminal. Clicking **Executar** hits `POST /api/run-shortcut` (thin wrapper around `runShortcut()` in `src/lib/runShortcut.ts`), which:
-1. Reads `.config.json` `resourcesPath` (the full path configured at `/settings`, e.g. `.../personal-finance/resources/trevo`).
-2. Writes a temp `.ps1` that `Set-Location`s to that `resourcesPath` and runs `claude "<prompt>"` (interactive mode, TUI visible).
-3. Spawns `cmd /c start "" powershell -NoExit -File <script>` — the window stays open for interaction after claude exits.
-
-**Agendados** — cron-scheduled runs via `node-cron` (`src/lib/scheduler.ts`). Schedules persist to `.pfv-schedules.json` (gitignored) and are re-registered on every server start. Timezone: America/Sao_Paulo.
-
-CRUD via `/api/schedules`: `GET` (list), `POST` (create), `PUT` (update), `DELETE` (remove), `PATCH` (run now). Each tick calls `runShortcut(prompt)` — same path as the manual preset, so each scheduled run pops a new PowerShell window. Cron only fires while the Next.js server is running.
+CRUD via `/api/schedules`: `GET` (list), `POST` (create), `PUT` (update), `DELETE` (remove), `PATCH` (run now). Each tick calls `runShortcut(prompt, { autoClose: true })` in `src/lib/runShortcut.ts`, which writes a temp `.ps1` that `Set-Location`s to the configured `resourcesPath` and spawns `cmd /c start "" powershell -File <script>` to run `claude "<prompt>"`. Cron only fires while the Next.js server is running.
 
 No session tracking or status reporting — agent lifecycle is handled elsewhere. Windows-only (returns error on other platforms).
 

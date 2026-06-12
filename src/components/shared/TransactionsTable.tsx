@@ -4,6 +4,7 @@ import type { ColumnsType } from "antd/es/table";
 import { formatBRL, REDACTED } from "@/lib/formatters";
 import { getCategoryMeta, TYPE_COLORS } from "@/lib/category-meta";
 import type { FlatTransaction } from "@/lib/types";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 const { Text } = Typography;
 
@@ -29,12 +30,13 @@ export function TransactionsTable({
   pageSize = 200,
   showCard = true,
 }: TransactionsTableProps) {
+  const isMobile = useIsMobile();
   const banks = useMemo(() => Array.from(new Set(transactions.map((t) => t.bank).filter(Boolean))) as string[], [transactions]);
   const accounts = useMemo(() => Array.from(new Set(transactions.map((t) => t.account_number).filter(Boolean))) as string[], [transactions]);
   const holders = useMemo(() => Array.from(new Set(transactions.map((t) => t.holder).filter(Boolean))) as string[], [transactions]);
-  const types = useMemo(() => Array.from(new Set(transactions.map((t) => t.type))), [transactions]);
+  const types = useMemo(() => Array.from(new Set(transactions.map((t) => t.type).filter(Boolean))) as string[], [transactions]);
 
-  const columns: ColumnsType<FlatTransaction> = useMemo(
+  const allColumns: ColumnsType<FlatTransaction> = useMemo(
     () => [
       {
         title: "Data",
@@ -163,6 +165,20 @@ export function TransactionsTable({
     [banks, accounts, holders, types, redacted]
   );
 
+  // On mobile, show only Date + Description (with category subline) + Amount.
+  const columns: ColumnsType<FlatTransaction> = useMemo(() => {
+    if (!isMobile) return allColumns;
+    const keep = new Set(["date", "description", "amount"]);
+    return allColumns
+      .filter((c) => keep.has((c as { key?: string }).key ?? ""))
+      .map((c) => {
+        if ((c as { key?: string }).key === "date") {
+          return { ...c, width: 64, render: (d: string) => (d ? d.slice(5).replace("-", "/") : "—") } as typeof c;
+        }
+        return c;
+      });
+  }, [allColumns, isMobile]);
+
   const tableEl = (
     <Table
       dataSource={transactions}
@@ -175,7 +191,7 @@ export function TransactionsTable({
         showSizeChanger: true,
         showTotal: (t) => `${t} itens`,
       }}
-      scroll={{ x: 800 }}
+      scroll={isMobile ? undefined : { x: 800 }}
       rowSelection={
         rowSelection
           ? {

@@ -4,6 +4,7 @@ import { BudgetProvider } from "@/context/BudgetContext";
 import { InvestmentProvider } from "@/context/InvestmentContext";
 import { ThemeProvider, useThemeMode } from "@/context/ThemeContext";
 import { RedactProvider } from "@/context/RedactContext";
+import { RefreshProvider } from "@/context/RefreshContext";
 import { AppShell } from "@/components/AppShell";
 import "@/styles/globals.css";
 
@@ -24,13 +25,15 @@ function AppInner({ Component, pageProps }: AppProps) {
       }}
     >
       <RedactProvider>
-        <BudgetProvider>
-          <InvestmentProvider>
-            <AppShell>
-              <Component {...pageProps} />
-            </AppShell>
-          </InvestmentProvider>
-        </BudgetProvider>
+        <RefreshProvider>
+          <BudgetProvider>
+            <InvestmentProvider>
+              <AppShell>
+                <Component {...pageProps} />
+              </AppShell>
+            </InvestmentProvider>
+          </BudgetProvider>
+        </RefreshProvider>
       </RedactProvider>
     </ConfigProvider>
   );

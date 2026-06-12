@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useCallback } from "react";
 import { Card, Typography, Space, Row, Col, Button, Modal } from "antd";
-import { Download, RefreshCw, Eye, EyeOff } from "lucide-react";
+import { Download, RefreshCw } from "lucide-react";
 import { useBudget } from "@/hooks/useBudget";
 import { flattenTransactions } from "@/context/BudgetContext";
 import { MonthSelector } from "@/components/shared/MonthSelector";
@@ -15,17 +15,21 @@ import {
 } from "@/components/shared/TransactionsFilters";
 import { formatBRL, REDACTED } from "@/lib/formatters";
 import { useRedact } from "@/context/RedactContext";
+import { useRefresh, useRegisterRefresh } from "@/context/RefreshContext";
 import { getBudgetSummary } from "@/lib/computations";
+import { useIsMobile } from "@/hooks/useIsMobile";
 
 const { Text, Title } = Typography;
 
 export default function TransactionsV2Page() {
   const { data: activeData, allMonths, loading, refresh } = useBudget();
-  const { redacted, toggle: toggleRedact } = useRedact();
+  const { redacted } = useRedact();
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
   const [filters, setFilters] = useState<TransactionFilters>(DEFAULT_FILTERS);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
-  const [refreshing, setRefreshing] = useState(false);
+  const isMobile = useIsMobile();
+  const { refreshing } = useRefresh();
+  useRegisterRefresh(refresh, [refresh]);
 
   const monthPills = useMemo(
     () => allMonths.map((m) => ({ month: m.month, net: getBudgetSummary(m).net })),
@@ -95,52 +99,42 @@ export default function TransactionsV2Page() {
     URL.revokeObjectURL(url);
   }, [filtered, data]);
 
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    await refresh();
-    setRefreshing(false);
-  };
-
   if (loading) return null;
   if (!data) return <EmptyState />;
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: isMobile ? "flex-start" : "center",
+        marginBottom: isMobile ? 12 : 20,
+        flexDirection: isMobile ? "column" : "row",
+        gap: isMobile ? 10 : 0,
+      }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <Title level={4} style={{ margin: 0 }}>Transacoes</Title>
-          <RefreshCw
-            size={16}
-            color="#8c8c8c"
-            style={{ cursor: "pointer", animation: refreshing ? "spin 1s linear infinite" : undefined }}
-            onClick={handleRefresh}
-          />
-          {redacted ? (
-            <EyeOff size={16} color="#8c8c8c" style={{ cursor: "pointer" }} onClick={toggleRedact} />
-          ) : (
-            <Eye size={16} color="#8c8c8c" style={{ cursor: "pointer" }} onClick={toggleRedact} />
-          )}
         </div>
-        <Space>
+        <Space wrap style={isMobile ? { width: "100%", overflowX: "auto" } : undefined}>
           <MonthSelector months={monthPills} selected={data.month} onSelect={setSelectedMonth} />
           <Button icon={<Download size={14} />} onClick={handleExport} size="small">CSV</Button>
         </Space>
       </div>
 
-      <Row gutter={12} style={{ marginBottom: 16 }}>
-        <Col flex="1 1 0">
+      <Row gutter={[8, 8]} style={{ marginBottom: 16 }}>
+        <Col xs={12} sm={8} md={isMobile ? 12 : undefined} lg={undefined} flex={isMobile ? undefined : "1 1 0"}>
           <StatCard title="Receita" value={stats.income} valueColor="#52c41a" />
         </Col>
-        <Col flex="1 1 0">
+        <Col xs={12} sm={8} flex={isMobile ? undefined : "1 1 0"}>
           <StatCard title="Despesa" value={stats.expenses} valueColor="#ff4d4f" />
         </Col>
-        <Col flex="1 1 0">
+        <Col xs={12} sm={8} flex={isMobile ? undefined : "1 1 0"}>
           <StatCard title="Provisionado" value={stats.provisioned} valueColor="#722ed1" />
         </Col>
-        <Col flex="1 1 0">
+        <Col xs={12} sm={12} flex={isMobile ? undefined : "1 1 0"}>
           <StatCard title="Saldo" value={stats.net} valueColor={stats.net >= 0 ? "#52c41a" : "#ff4d4f"} />
         </Col>
-        <Col flex="1 1 0">
+        <Col xs={24} sm={12} flex={isMobile ? undefined : "1 1 0"}>
           <StatCard title="Transacoes" value={stats.count} prefix="" precision={0} />
         </Col>
       </Row>
