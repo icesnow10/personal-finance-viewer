@@ -296,7 +296,9 @@ function collectBudgets(baseDir: string, household?: string): Record<string, unk
       const resultDir = path.join(dir, entry.name, "expenses", "result");
       if (!fs.existsSync(resultDir)) continue;
 
-      const jsonFiles = fs.readdirSync(resultDir).filter((f) => f.endsWith(".json"));
+      const jsonFiles = fs
+        .readdirSync(resultDir)
+        .filter((f) => /^budget_.+\.json$/i.test(f));
       for (const file of jsonFiles) {
         try {
           const parsed = readJsonFile(path.join(resultDir, file));

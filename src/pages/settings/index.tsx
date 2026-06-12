@@ -100,11 +100,11 @@ export default function SettingsPage() {
           />
         )}
 
-        <div style={{ marginTop: 20, padding: 16, background: token.colorFillQuaternary, borderRadius: 8 }}>
+        <div style={{ marginTop: 20, padding: 16, background: token.colorFillQuaternary, borderRadius: 8, overflowX: "auto" }}>
           <Text type="secondary" style={{ fontSize: 12 }}>
             Estrutura esperada:
           </Text>
-          <pre style={{ fontSize: 11, color: token.colorTextSecondary, margin: "8px 0 0", lineHeight: 1.6 }}>
+          <pre style={{ fontSize: 11, color: token.colorTextSecondary, margin: "8px 0 0", lineHeight: 1.6, whiteSpace: "pre", overflowX: "auto" }}>
 {`{caminho}/
   2026-01/
     expenses/

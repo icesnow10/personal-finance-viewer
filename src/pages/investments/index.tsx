@@ -9,9 +9,10 @@ import {
   PiggyBank, Plus, Edit, Trash2, FilterX, Table as TableIcon,
   Network, DollarSign, Save, FolderOpen, Copy, ArrowUp, ArrowDown,
   ChevronDown, ChevronUp, Star, Minus, BarChart3, LayoutDashboard,
-  Users, Building2, FileSpreadsheet, Settings, Eye, EyeOff, RefreshCw,
+  Users, Building2, FileSpreadsheet, Settings,
 } from "lucide-react";
 import { useRedact } from "@/context/RedactContext";
+import { useRegisterRefresh } from "@/context/RefreshContext";
 import { useInvestments } from "@/hooks/useInvestments";
 import type {
   Investment, FilteredInfo, ComparisonRow, DetailedComparisonRow,
@@ -26,34 +27,7 @@ const { Title } = Typography;
 
 export default function InvestmentsPage() {
   const { investments, setInvestments } = useInvestments();
-  const { redacted, toggle: toggleRedact } = useRedact();
-  const [refreshing, setRefreshing] = useState(false);
-
-  const handleRefresh = async () => {
-    setRefreshing(true);
-    try {
-      const [invRes, repRes] = await Promise.all([
-        fetch("/api/investments"),
-        fetch("/api/reports"),
-      ]);
-      const invData = await invRes.json();
-      const repData = await repRes.json();
-      if (Array.isArray(invData)) {
-        setInvestments(invData.map((r: Investment, i: number) => ({
-          ...r,
-          key: r.key ?? `${r.month_year}-${r.broker}-${r.holder}-${r.nome}-${i}`,
-        })));
-      }
-      if (Array.isArray(repData)) {
-        setReports(repData);
-        if (repData.length && !repData.some((r) => `${r.month}__${r.filename}` === selectedReport)) {
-          setSelectedReport(`${repData[0].month}__${repData[0].filename}`);
-        }
-      }
-    } finally {
-      setTimeout(() => setRefreshing(false), 500);
-    }
-  };
+  const { redacted } = useRedact();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
@@ -103,6 +77,28 @@ export default function InvestmentsPage() {
   const [isImportChoiceModalOpen, setIsImportChoiceModalOpen] = useState(false);
   const [isReplaceConfirmModalOpen, setIsReplaceConfirmModalOpen] = useState(false);
   const [pendingImportData, setPendingImportData] = useState<Investment[]>([]);
+
+  const refreshInvestments = useCallback(async () => {
+    const [invRes, repRes] = await Promise.all([
+      fetch("/api/investments"),
+      fetch("/api/reports"),
+    ]);
+    const invData = await invRes.json();
+    const repData = await repRes.json();
+    if (Array.isArray(invData)) {
+      setInvestments(invData.map((r: Investment, i: number) => ({
+        ...r,
+        key: r.key ?? `${r.month_year}-${r.broker}-${r.holder}-${r.nome}-${i}`,
+      })));
+    }
+    if (Array.isArray(repData)) {
+      setReports(repData);
+      if (repData.length && !repData.some((r) => `${r.month}__${r.filename}` === selectedReport)) {
+        setSelectedReport(`${repData[0].month}__${repData[0].filename}`);
+      }
+    }
+  }, [setInvestments, selectedReport]);
+  useRegisterRefresh(refreshInvestments, [refreshInvestments]);
 
   const uniqueMonthsForFilter = useMemo(
     () => Array.from(new Set(investments.map((inv) => inv.month_year))).sort().reverse(),
@@ -836,21 +832,10 @@ export default function InvestmentsPage() {
             net: investments.filter((inv) => inv.month_year === m).reduce((s, inv) => s + inv.valor_atual, 0),
           }));
           return (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <PiggyBank size={20} color="#8c8c8c" />
                 <Title level={4} style={{ margin: 0, fontWeight: 400 }}>Investimentos</Title>
-                <RefreshCw
-                  size={16}
-                  color="#8c8c8c"
-                  style={{ cursor: "pointer", animation: refreshing ? "spin 1s linear infinite" : undefined }}
-                  onClick={handleRefresh}
-                />
-                {redacted ? (
-                  <EyeOff size={16} color="#8c8c8c" style={{ cursor: "pointer" }} onClick={toggleRedact} />
-                ) : (
-                  <Eye size={16} color="#8c8c8c" style={{ cursor: "pointer" }} onClick={toggleRedact} />
-                )}
               </div>
               {monthsWithTotals.length > 0 && (
                 <MonthSelector months={monthsWithTotals} selected={selectedMonth} onSelect={setSelectedMonth} />
@@ -862,17 +847,19 @@ export default function InvestmentsPage() {
         {/* Views Card */}
         <Card
           title={
-            <Segmented
-              value={viewMode}
-              onChange={(v) => setViewMode(v as typeof viewMode)}
-              options={[
-                { label: <Space><LayoutDashboard size={16} />Summary</Space>, value: "summary" },
-                { label: <Space><TableIcon size={16} />Table View</Space>, value: "table" },
-                { label: <Space><Network size={16} />Section View</Space>, value: "tree" },
-                { label: <Space><BarChart3 size={16} />Comparison</Space>, value: "comparison" },
-                { label: <Space><FileSpreadsheet size={16} />Reports</Space>, value: "reports" },
-              ]}
-            />
+            <div style={{ overflowX: "auto", maxWidth: "100%" }}>
+              <Segmented
+                value={viewMode}
+                onChange={(v) => setViewMode(v as typeof viewMode)}
+                options={[
+                  { label: <Space><LayoutDashboard size={16} />Summary</Space>, value: "summary" },
+                  { label: <Space><TableIcon size={16} />Table View</Space>, value: "table" },
+                  { label: <Space><Network size={16} />Section View</Space>, value: "tree" },
+                  { label: <Space><BarChart3 size={16} />Comparison</Space>, value: "comparison" },
+                  { label: <Space><FileSpreadsheet size={16} />Reports</Space>, value: "reports" },
+                ]}
+              />
+            </div>
           }
           extra={viewMode === "table" && <Button icon={<FilterX size={16} />} onClick={clearAllFilters} size="small">Clear Filters</Button>}
         >

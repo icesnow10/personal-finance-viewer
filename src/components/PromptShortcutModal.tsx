@@ -7,7 +7,6 @@ import {
   Tag,
   message,
   theme,
-  Tabs,
   Input,
   Switch,
   Popconfirm,
@@ -15,25 +14,9 @@ import {
   Form,
   Space,
 } from "antd";
-import { Terminal, Play, Clock, Trash2, Plus, RefreshCw, Pencil } from "lucide-react";
+import { Clock, Trash2, Plus, RefreshCw, Pencil, Play } from "lucide-react";
 
 const { Text } = Typography;
-
-type Preset = {
-  key: string;
-  label: string;
-  prompt: string;
-  description?: string;
-};
-
-const PRESETS: Preset[] = [
-  {
-    key: "heartbeat-trevo",
-    label: "Heartbeat — Trevo (current month)",
-    prompt: "/heartbeat trevo current month",
-    description: "Roda o /heartbeat do mês atual para o holder trevo.",
-  },
-];
 
 type Schedule = {
   id: string;
@@ -53,29 +36,7 @@ export function PromptShortcutModal({
   onClose: () => void;
 }) {
   const { token } = theme.useToken();
-  const [runningKey, setRunningKey] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
-
-  const run = async (prompt: string, key: string) => {
-    setRunningKey(key);
-    try {
-      const res = await fetch("/api/run-shortcut", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        messageApi.error(data.error || "Falha ao abrir terminal");
-        return;
-      }
-      messageApi.success(`Terminal aberto em ${data.cwd}`);
-    } catch (err) {
-      messageApi.error((err as Error).message);
-    } finally {
-      setRunningKey(null);
-    }
-  };
 
   return (
     <Modal
@@ -84,102 +45,15 @@ export function PromptShortcutModal({
       footer={null}
       title={
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Terminal size={18} color={token.colorPrimary} />
-          <span>Atalhos de prompts</span>
+          <Clock size={18} color={token.colorPrimary} />
+          <span>Agendados</span>
         </div>
       }
       width={680}
     >
       {contextHolder}
-      <Tabs
-        defaultActiveKey="presets"
-        items={[
-          {
-            key: "presets",
-            label: (
-              <span>
-                <Play size={12} style={{ marginRight: 6, verticalAlign: "-1px" }} />
-                Presets
-              </span>
-            ),
-            children: (
-              <PresetsTab
-                presets={PRESETS}
-                runningKey={runningKey}
-                onRun={(p) => run(p.prompt, p.key)}
-              />
-            ),
-          },
-          {
-            key: "schedules",
-            label: (
-              <span>
-                <Clock size={12} style={{ marginRight: 6, verticalAlign: "-1px" }} />
-                Agendados
-              </span>
-            ),
-            children: <SchedulesTab messageApi={messageApi} />,
-          },
-        ]}
-      />
+      <SchedulesTab messageApi={messageApi} />
     </Modal>
-  );
-}
-
-function PresetsTab({
-  presets,
-  runningKey,
-  onRun,
-}: {
-  presets: Preset[];
-  runningKey: string | null;
-  onRun: (p: Preset) => void;
-}) {
-  const { token } = theme.useToken();
-  return (
-    <>
-      <Text type="secondary" style={{ fontSize: 13, display: "block", marginBottom: 16 }}>
-        Abre um PowerShell no diretório do plugin personal-finance e executa o claude com o
-        prompt escolhido.
-      </Text>
-      <List
-        dataSource={presets}
-        renderItem={(preset) => (
-          <List.Item
-            key={preset.key}
-            style={{
-              padding: 12,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              borderRadius: 8,
-              marginBottom: 8,
-            }}
-            actions={[
-              <Button
-                key="run"
-                type="primary"
-                icon={<Play size={14} />}
-                loading={runningKey === preset.key}
-                onClick={() => onRun(preset)}
-              >
-                Executar
-              </Button>,
-            ]}
-          >
-            <List.Item.Meta
-              title={preset.label}
-              description={
-                <div>
-                  {preset.description && (
-                    <div style={{ marginBottom: 6 }}>{preset.description}</div>
-                  )}
-                  <Tag style={{ fontFamily: "monospace" }}>{preset.prompt}</Tag>
-                </div>
-              }
-            />
-          </List.Item>
-        )}
-      />
-    </>
   );
 }
 

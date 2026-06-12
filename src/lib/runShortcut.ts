@@ -40,26 +40,33 @@ export function runShortcut(prompt: string, opts: RunOptions = {}): RunResult {
     return { ok: false, error: "resourcesPath is not configured in /settings" };
   }
 
-  const cwd = parentOfResources(resourcesPath);
-  if (!cwd) {
-    return {
-      ok: false,
-      error: `Could not derive parent of "resources" from: ${resourcesPath}`,
-    };
-  }
+  const cwd = resourcesPath;
   if (!fs.existsSync(cwd)) {
     return { ok: false, error: `Working directory does not exist: ${cwd}` };
   }
 
   const escapedCwd = cwd.replace(/`/g, "``").replace(/"/g, '`"');
   const escapedPrompt = prompt.replace(/`/g, "``").replace(/"/g, '`"');
-  // -p (print mode) is non-interactive: runs the prompt once, prints the result, exits.
-  // --verbose streams tool calls and text in real time so the user can watch it work.
-  // Without -p claude stays in interactive TUI so the user can keep chatting.
-  const claudeCmd = opts.autoClose
-    ? `claude -p "${escapedPrompt}" --verbose`
-    : `claude "${escapedPrompt}"`;
-  const ps1 = [`Set-Location "${escapedCwd}"`, claudeCmd, ""].join("\r\n");
+  // Always interactive: opens the TUI so slash commands are evaluated (-p mode
+  // rejects them as "unknown command") and terminal stays open (-NoExit).
+  // autoClose is kept for API compatibility but no longer used.
+  void opts;
+  const claudeCmd = `claude "${escapedPrompt}"`;
+
+  // Diagnostic echoes so the user always sees SOMETHING before claude's TUI
+  // takes over the screen, and an exit marker after it returns. Without these,
+  // if claude errors out quickly or Ink clears the buffer, the window looks blank.
+  const ps1 = [
+    `$Host.UI.RawUI.WindowTitle = "claude-shortcut"`,
+    `Set-Location "${escapedCwd}"`,
+    `Write-Host "cwd: $(Get-Location)" -ForegroundColor Cyan`,
+    `Write-Host "cmd: ${claudeCmd.replace(/"/g, '`"')}" -ForegroundColor Cyan`,
+    `Write-Host ""`,
+    claudeCmd,
+    `Write-Host ""`,
+    `Write-Host "[claude exited with code $LASTEXITCODE]" -ForegroundColor Yellow`,
+    ``,
+  ].join("\r\n");
 
   const scriptPath = path.join(
     os.tmpdir(),
@@ -73,7 +80,7 @@ export function runShortcut(prompt: string, opts: RunOptions = {}): RunResult {
     "start",
     "",
     "powershell.exe",
-    ...(opts.autoClose ? [] : ["-NoExit"]),
+    "-NoExit",
     "-ExecutionPolicy",
     "Bypass",
     "-File",
@@ -90,3 +97,4 @@ export function runShortcut(prompt: string, opts: RunOptions = {}): RunResult {
 
   return { ok: true, cwd };
 }
+
