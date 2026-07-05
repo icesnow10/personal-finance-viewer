@@ -74,7 +74,7 @@ Pure functions over `BudgetData` used by pages:
 
 | Route | File | What it renders |
 |---|---|---|
-| `/overview` | `src/pages/overview/index.tsx` | Spending pace, budget buckets, category tree, installments + monthly composition (à vista / parcela nova / parcela antiga), top-10 categories trend, monthly income bars, wealth evolution (cumulative monthly net) |
+| `/overview` | `src/pages/overview/index.tsx` | Spending pace, budget buckets, category tree, installments + monthly composition (à vista / parcela nova / parcela antiga), top-10 categories trend, monthly income bars, wealth evolution (cumulative monthly net). **Principais Categorias** rows expand into a per-category installment tree (`CategoryInstallmentTree`) breaking spend into parcela antiga / nova / à vista / provisionado, each drillable to its transactions. The **Comparar** modal (`CategoryComparisonModal`) supports multi-selecting category rows with a sticky totalizer footer summing the selection per month + Média + Total. |
 | `/transactions-v2` | `src/pages/transactions-v2/index.tsx` | Searchable/filterable flat transaction table |
 | `/income` | `src/pages/income/index.tsx` | Income breakdown by month and source |
 | `/settings` | `src/pages/settings/index.tsx` | Resources path configuration (writes `.config.json`) |

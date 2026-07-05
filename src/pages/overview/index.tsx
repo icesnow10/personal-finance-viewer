@@ -29,7 +29,7 @@ import { formatBRL, formatPercent, formatCompact, REDACTED } from "@/lib/formatt
 import { useRedact } from "@/context/RedactContext";
 import { useRefresh, useRegisterRefresh } from "@/context/RefreshContext";
 import { getCategoryMeta } from "@/lib/category-meta";
-import type { BudgetData } from "@/lib/types";
+import type { BudgetData, Transaction } from "@/lib/types";
 
 const { Text, Title } = Typography;
 
@@ -1807,6 +1807,122 @@ function AccountBillsCard({ data }: { data: BudgetData }) {
   );
 }
 
+/* ── Installment classification (à vista / parcela nova / parcela antiga) ── */
+type InstGroupKey = "antiga" | "nova" | "avista" | "prov";
+
+const INST_GROUP_META: Record<InstGroupKey, { label: string; color: string; hint: string }> = {
+  antiga: { label: "Parcela antiga", color: "#8c8c8c", hint: "Iniciadas em meses anteriores" },
+  nova:   { label: "Parcela nova",   color: "#722ed1", hint: "1a parcela iniciada este mes" },
+  avista: { label: "A vista",        color: "#4096ff", hint: "Compra unica, sem parcelamento" },
+  prov:   { label: "Provisionado",   color: "#fa8c16", hint: "Estimativa — ainda nao lancado" },
+};
+const INST_GROUP_ORDER: InstGroupKey[] = ["antiga", "nova", "avista", "prov"];
+
+function classifyInstallment(tx: Transaction): InstGroupKey {
+  if (tx.provisional) return "prov";
+  const total = tx.totalInstallments;
+  const n = tx.installmentNumber;
+  if (total && total >= 2 && n) return n === 1 ? "nova" : "antiga";
+  return "avista";
+}
+
+/* ── Per-category installment tree (old vs new installments) ───── */
+function CategoryInstallmentTree({ transactions, redacted }: { transactions: Transaction[]; redacted: boolean }) {
+  const { token } = theme.useToken();
+  const r = (v: number) => redacted ? REDACTED : formatBRL(v);
+  const [openGroups, setOpenGroups] = useState<Set<InstGroupKey>>(new Set());
+  const toggleGroup = (k: InstGroupKey) =>
+    setOpenGroups(prev => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+
+  const { groups, total } = useMemo(() => {
+    const g: Record<InstGroupKey, { amount: number; txs: Transaction[] }> = {
+      antiga: { amount: 0, txs: [] }, nova: { amount: 0, txs: [] },
+      avista: { amount: 0, txs: [] }, prov: { amount: 0, txs: [] },
+    };
+    for (const tx of transactions) {
+      const k = classifyInstallment(tx);
+      g[k].amount = Math.round((g[k].amount + tx.amount) * 100) / 100;
+      g[k].txs.push(tx);
+    }
+    for (const k of INST_GROUP_ORDER) g[k].txs.sort((a, b) => b.amount - a.amount);
+    const sum = INST_GROUP_ORDER.reduce((s, k) => s + g[k].amount, 0);
+    return { groups: g, total: Math.round(sum * 100) / 100 };
+  }, [transactions]);
+
+  const visible = INST_GROUP_ORDER.filter(k => groups[k].txs.length > 0);
+  if (visible.length === 0) return null;
+
+  return (
+    <div style={{
+      padding: "8px 0 12px 48px",
+      background: token.colorFillQuaternary,
+      borderBottom: `1px solid ${token.colorBorderSecondary}`,
+      display: "flex", flexDirection: "column", gap: 4,
+    }}>
+      {visible.map((k) => {
+        const meta = INST_GROUP_META[k];
+        const grp = groups[k];
+        const pct = total !== 0 ? (grp.amount / total) * 100 : 0;
+        const isOpen = openGroups.has(k);
+        return (
+          <div key={k}>
+            {/* Group header */}
+            <div
+              onClick={() => toggleGroup(k)}
+              style={{
+                display: "grid", gridTemplateColumns: "16px 1fr auto 56px", gap: 10, alignItems: "center",
+                padding: "5px 12px 5px 0", cursor: "pointer",
+              }}
+            >
+              <span style={{
+                fontSize: 9, color: "#8c8c8c", justifySelf: "center",
+                transition: "transform 0.2s", transform: isOpen ? "rotate(90deg)" : "rotate(0)",
+              }}>&#9654;</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: meta.color, flexShrink: 0 }} />
+                <span style={{ fontSize: 12, fontWeight: 500, color: token.colorText }}>{meta.label}</span>
+                <span style={{ fontSize: 10, color: "#bfbfbf" }}>({grp.txs.length})</span>
+                <span style={{ fontSize: 10, color: "#8c8c8c", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta.hint}</span>
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 600, color: token.colorText, whiteSpace: "nowrap" }}>{r(grp.amount)}</span>
+              <span style={{
+                fontSize: 10, fontWeight: 500, color: meta.color, justifySelf: "end",
+                padding: "1px 6px", borderRadius: 4, background: `${meta.color}1a`, minWidth: 44, textAlign: "center",
+              }}>
+                {formatPercent(pct)}
+              </span>
+            </div>
+
+            {/* Individual transactions */}
+            {isOpen && (
+              <div style={{ paddingLeft: 16, borderLeft: `2px solid ${meta.color}33`, marginLeft: 7, marginBottom: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                {grp.txs.map((tx, i) => {
+                  const isInst = k === "antiga" || k === "nova";
+                  return (
+                    <div key={tx.id ?? `${tx.description}-${i}`} style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 10, alignItems: "center", padding: "2px 12px 2px 0" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                        <span style={{ fontSize: 11, color: token.colorText, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.description}</span>
+                        {isInst && tx.totalInstallments && tx.installmentNumber && (
+                          <span style={{ fontSize: 9, fontWeight: 600, color: meta.color, background: `${meta.color}1a`, borderRadius: 3, padding: "0 4px", flexShrink: 0, whiteSpace: "nowrap" }}>
+                            {tx.installmentNumber}/{tx.totalInstallments}
+                            {tx.totalInstallments - tx.installmentNumber > 0 ? ` · faltam ${tx.totalInstallments - tx.installmentNumber}` : " · ultima"}
+                          </span>
+                        )}
+                        {tx.holder && <span style={{ fontSize: 9, color: "#bfbfbf", flexShrink: 0 }}>{tx.holder}</span>}
+                      </div>
+                      <span style={{ fontSize: 11, color: token.colorText, whiteSpace: "nowrap" }}>{r(tx.amount)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ── Top 10 Categorias ───────────────────────────────────────── */
 type TopCatView = "top10" | "highest" | "lowest";
 
@@ -1821,6 +1937,10 @@ function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData
   const [checkedCats, setCheckedCats] = useState<Set<string>>(new Set());
   const [checkedTotal, setCheckedTotal] = useState(0);
   const [viewMode, setViewMode] = useState<TopCatView>("top10");
+  const [expandedCats, setExpandedCats] = useState<Set<string>>(new Set());
+  const toggleCatExpand = useCallback((name: string) => {
+    setExpandedCats(prev => { const n = new Set(prev); if (n.has(name)) n.delete(name); else n.add(name); return n; });
+  }, []);
   const [drilldownCat, setDrilldownCat] = useState<string | null>(null);
   const [drilldownFilters, setDrilldownFilters] = useState<TransactionFilters>(DEFAULT_FILTERS);
   const [comparisonOpen, setComparisonOpen] = useState(false);
@@ -1862,6 +1982,17 @@ function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData
   const allCategories = useMemo(() => {
     const cats = data.expenses?.by_category ?? {};
     return Object.entries(cats).map(([name, cat]) => ({ name, total: cat.total }));
+  }, [data]);
+
+  // Flat transactions per category — feeds the installment tree (old/new parcelas)
+  const catTxs = useMemo(() => {
+    const map: Record<string, Transaction[]> = {};
+    for (const [name, cat] of Object.entries(data.expenses?.by_category ?? {})) {
+      const txs: Transaction[] = [];
+      for (const sub of Object.values(cat.subcategories)) for (const tx of sub.transactions) txs.push(tx);
+      map[name] = txs;
+    }
+    return map;
   }, [data]);
 
   // Provisioned amount per category (sum of transactions flagged as provisional)
@@ -2036,8 +2167,8 @@ function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData
 
         if (isMobile) {
           return (
+            <React.Fragment key={cat.name}>
             <div
-              key={cat.name}
               onClick={() => openDrilldown(cat.name)}
               style={{
                 display: "grid", gridTemplateColumns: gridCols,
@@ -2049,6 +2180,14 @@ function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData
             >
               <span style={{ fontSize: 11, color: "#8c8c8c", textAlign: "center", fontWeight: 500 }}>{idx + 1}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <span
+                  onClick={(e) => { e.stopPropagation(); toggleCatExpand(cat.name); }}
+                  style={{
+                    fontSize: 9, color: "#8c8c8c", flexShrink: 0,
+                    transition: "transform 0.2s", transform: expandedCats.has(cat.name) ? "rotate(90deg)" : "rotate(0)",
+                  }}
+                  title="parcelas"
+                >&#9654;</span>
                 <div style={{ width: 6, height: 6, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
                 <span style={{ fontSize: 14, flexShrink: 0 }}>{emoji}</span>
                 <span style={{
@@ -2081,12 +2220,16 @@ function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData
                 <List size={14} />
               </span>
             </div>
+            {expandedCats.has(cat.name) && (
+              <CategoryInstallmentTree transactions={catTxs[cat.name] ?? []} redacted={redacted} />
+            )}
+            </React.Fragment>
           );
         }
 
         return (
+          <React.Fragment key={cat.name}>
           <div
-            key={cat.name}
             style={{
               display: "grid", gridTemplateColumns: gridCols,
               gap: 12, alignItems: "center",
@@ -2096,8 +2239,16 @@ function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData
           >
             {/* Number */}
             <span style={{ fontSize: 12, color: "#8c8c8c", textAlign: "center", fontWeight: 500 }}>{idx + 1}</span>
-            {/* Dot + emoji + name + new tag */}
+            {/* Chevron + dot + emoji + name + new tag */}
             <div style={{ display: "flex", alignItems: "center", gap: 8, paddingLeft: 0 }}>
+              <span
+                onClick={() => toggleCatExpand(cat.name)}
+                title="parcelas (antiga / nova / a vista)"
+                style={{
+                  fontSize: 10, color: "#8c8c8c", cursor: "pointer", flexShrink: 0,
+                  transition: "transform 0.2s", transform: expandedCats.has(cat.name) ? "rotate(90deg)" : "rotate(0)",
+                }}
+              >&#9654;</span>
               <div style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
               <span style={{ fontSize: 15 }}>{emoji}</span>
               <span style={{ fontSize: 13, fontWeight: 500 }}>{cat.name}</span>
@@ -2236,6 +2387,10 @@ function TopCategoriesCard({ data, previousData, allMonths }: { data: BudgetData
               <List size={14} />
             </span>
           </div>
+          {expandedCats.has(cat.name) && (
+            <CategoryInstallmentTree transactions={catTxs[cat.name] ?? []} redacted={redacted} />
+          )}
+          </React.Fragment>
         );
       })}
 
@@ -2280,6 +2435,13 @@ function CategoryComparisonModal({
 }) {
   const { token } = theme.useToken();
   const r = (v: number) => redacted ? REDACTED : formatBRL(v);
+
+  // Multi-select of category rows → totalizer footer
+  const [selectedCats, setSelectedCats] = useState<Set<string>>(new Set());
+  const toggleSel = useCallback((cat: string) => {
+    setSelectedCats(prev => { const n = new Set(prev); if (n.has(cat)) n.delete(cat); else n.add(cat); return n; });
+  }, []);
+  useEffect(() => { if (!open) setSelectedCats(new Set()); }, [open]);
 
   // Sort months ascending and limit to last 12 for readability
   const months = useMemo(() => {
@@ -2355,7 +2517,16 @@ function CategoryComparisonModal({
                 background: token.colorBgElevated, padding: "8px 10px",
                 textAlign: "left", borderBottom: `1px solid ${token.colorBorderSecondary}`,
                 minWidth: 200,
-              }}>Categoria</th>
+              }}>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  <Checkbox
+                    checked={grid.categories.length > 0 && selectedCats.size === grid.categories.length}
+                    indeterminate={selectedCats.size > 0 && selectedCats.size < grid.categories.length}
+                    onChange={(e) => setSelectedCats(e.target.checked ? new Set(grid.categories) : new Set())}
+                  />
+                  Categoria
+                </span>
+              </th>
               {months.map((m) => (
                 <th key={m.month} style={{
                   position: "sticky", top: 0, zIndex: 2,
@@ -2446,15 +2617,27 @@ function CategoryComparisonModal({
               const sum = vals.reduce((s, v) => s + v, 0);
               const nonZero = vals.filter(v => v !== 0).length;
               const avg = nonZero > 0 ? sum / nonZero : 0;
+              const isSel = selectedCats.has(cat);
+              const selBg = "rgba(99,102,241,0.10)";
               return (
                 <tr key={cat}>
-                  <td style={{
-                    position: "sticky", left: 0, zIndex: 1,
-                    background: token.colorBgElevated, padding: "6px 10px",
-                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
-                    whiteSpace: "nowrap",
-                  }}>
-                    <span style={{ marginRight: 6 }}>{emoji}</span>{cat}
+                  <td
+                    onClick={() => toggleSel(cat)}
+                    style={{
+                      position: "sticky", left: 0, zIndex: 1,
+                      background: isSel ? selBg : token.colorBgElevated, padding: "6px 10px",
+                      borderBottom: `1px solid ${token.colorBorderSecondary}`,
+                      whiteSpace: "nowrap", cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                      <Checkbox
+                        checked={isSel}
+                        onChange={() => toggleSel(cat)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                      <span><span style={{ marginRight: 6 }}>{emoji}</span>{cat}</span>
+                    </span>
                   </td>
                   {months.map((m, i) => {
                     const v = vals[i];
@@ -2462,7 +2645,7 @@ function CategoryComparisonModal({
                       <td key={m.month} style={{
                         padding: "6px 10px", textAlign: "right",
                         borderBottom: `1px solid ${token.colorBorderSecondary}`,
-                        background: cellBg(v, max),
+                        background: isSel ? selBg : cellBg(v, max),
                         color: v < 0 ? "#52c41a" : token.colorText,
                         fontWeight: m.month === currentMonth ? 600 : 400,
                         whiteSpace: "nowrap",
@@ -2491,6 +2674,37 @@ function CategoryComparisonModal({
               );
             })}
           </tbody>
+          {selectedCats.size > 0 && (() => {
+            const selMonthVals = months.map((m) =>
+              [...selectedCats].reduce((s, c) => s + (grid.perMonth[m.month][c] ?? 0), 0)
+            );
+            const selSum = Math.round(selMonthVals.reduce((s, v) => s + v, 0) * 100) / 100;
+            const selNz = selMonthVals.filter((v) => v !== 0).length;
+            const selAvg = selNz > 0 ? selSum / selNz : 0;
+            const color = "#6366f1";
+            const bg = "#eef0fe";
+            const cell = (extra: React.CSSProperties = {}): React.CSSProperties => ({
+              padding: "10px", textAlign: "right", borderTop: `2px solid ${color}`,
+              background: bg, color, fontWeight: 700, whiteSpace: "nowrap",
+              position: "sticky", bottom: 0, zIndex: 2, ...extra,
+            });
+            return (
+              <tfoot>
+                <tr>
+                  <td style={cell({ textAlign: "left", left: 0, zIndex: 4 })}>
+                    &Sigma; {selectedCats.size} {selectedCats.size === 1 ? "categoria" : "categorias"}
+                  </td>
+                  {selMonthVals.map((v, i) => (
+                    <td key={months[i].month} style={cell(months[i].month === currentMonth ? { fontWeight: 800 } : {})}>
+                      {v === 0 ? "—" : r(v)}
+                    </td>
+                  ))}
+                  <td style={cell()}>{r(selAvg)}</td>
+                  <td style={cell()}>{r(selSum)}</td>
+                </tr>
+              </tfoot>
+            );
+          })()}
         </table>
       </div>
     </Modal>
