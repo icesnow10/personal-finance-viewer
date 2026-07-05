@@ -70,6 +70,7 @@ export default function InvestmentsPage() {
   const [mergeTypeColumn, setMergeTypeColumn] = useState(true);
   const [decimalSeparator, setDecimalSeparator] = useState<"comma" | "dot">("comma");
   const [comparisonDetailMode, setComparisonDetailMode] = useState<"summary" | "detailed">("summary");
+  const [comparisonSort, setComparisonSort] = useState<{ columnKey: string; order: "ascend" | "descend" } | null>(null);
   const [detailedExpandedKeys, setDetailedExpandedKeys] = useState<string[]>([]);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
   const [exportFormat, setExportFormat] = useState<"json" | "csv">("json");
@@ -575,6 +576,53 @@ export default function InvestmentsPage() {
 
   // ── Comparison View ──
 
+  // Sort value for a comparison column: product name, month value, or Δ between months.
+  const comparisonSortValue = (r: ComparisonRow | DetailedComparisonRow, columnKey: string): string | number => {
+    if (columnKey === "product") return String(r.product || r.nome || "");
+    if (columnKey.startsWith("variance") || columnKey.startsWith("qty_variance")) {
+      const idx = Number(columnKey.split("_").pop());
+      const curr = comparisonMonths[idx];
+      const next = comparisonMonths[idx + 1];
+      if (columnKey.startsWith("qty_variance")) return (Number(r[`qty_${next}`]) || 0) - (Number(r[`qty_${curr}`]) || 0);
+      return (Number(r[next]) || 0) - (Number(r[curr]) || 0);
+    }
+    return Number(r[columnKey]) || 0;
+  };
+
+  // Sorts only within contiguous available/frozen segments so subtotal and total rows
+  // (and the merged Type column) stay anchored where the data builder placed them.
+  const sortComparisonRows = <T extends ComparisonRow | DetailedComparisonRow>(rows: T[]): T[] => {
+    if (!comparisonSort) return rows;
+    const dir = comparisonSort.order === "ascend" ? 1 : -1;
+    const cmp = (a: T, b: T) => {
+      const av = comparisonSortValue(a, comparisonSort.columnKey);
+      const bv = comparisonSortValue(b, comparisonSort.columnKey);
+      return (typeof av === "string" || typeof bv === "string" ? String(av).localeCompare(String(bv)) : av - bv) * dir;
+    };
+    const withSortedChildren = (r: T): T =>
+      Array.isArray(r.children) && r.children.length ? { ...r, children: [...(r.children as T[])].sort(cmp) } : r;
+    const segType = (r: T) => String(r.key).split("_")[0];
+    const result: T[] = [];
+    let segment: T[] = [];
+    const flush = () => { if (segment.length) { segment.sort(cmp); result.push(...segment); segment = []; } };
+    rows.forEach((row) => {
+      const r = withSortedChildren(row);
+      if (r.isTotal || r.isSubtotal) { flush(); result.push(r); return; }
+      if (segment.length && segType(segment[segment.length - 1]) !== segType(r)) flush();
+      segment.push(r);
+    });
+    flush();
+    return result;
+  };
+
+  const comparisonSortOrder = (columnKey: string) =>
+    comparisonSort?.columnKey === columnKey ? comparisonSort.order : null;
+
+  const handleComparisonTableChange = (_p: unknown, _f: unknown, sorter: unknown) => {
+    const s = (Array.isArray(sorter) ? sorter[0] : sorter) as { columnKey?: React.Key; order?: "ascend" | "descend" } | undefined;
+    setComparisonSort(s?.order && s.columnKey != null ? { columnKey: String(s.columnKey), order: s.order } : null);
+  };
+
   const getComparisonData = (): ComparisonRow[] => {
     if (comparisonMonths.length === 0) return [];
     const data: ComparisonRow[] = [];
@@ -618,7 +666,19 @@ export default function InvestmentsPage() {
         i = j;
       }
     }
-    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left"; width?: number; align?: "right" | "center"; render?: (value: unknown, record: ComparisonRow) => React.ReactNode; onCell?: (record: ComparisonRow) => { rowSpan?: number; style?: React.CSSProperties }; sorter?: (a: ComparisonRow, b: ComparisonRow) => number }> = [
+    const monthTotals: Record<string, number> = {};
+    const totalRowForPct = rows?.find((r) => r.isTotal);
+    comparisonMonths.forEach((m) => { monthTotals[m] = Number(totalRowForPct?.[m]) || 0; });
+    const renderPct = (value: number, month: string) => {
+      const total = monthTotals[month];
+      if (!total) return null;
+      return (
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {" "}({((value / total) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%)
+        </Typography.Text>
+      );
+    };
+    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left"; width?: number; align?: "right" | "center"; render?: (value: unknown, record: ComparisonRow) => React.ReactNode; onCell?: (record: ComparisonRow) => { rowSpan?: number; style?: React.CSSProperties }; sorter?: boolean | ((a: ComparisonRow, b: ComparisonRow) => number); sortOrder?: "ascend" | "descend" | null }> = [
       {
         title: "Type", dataIndex: "type", key: "type", fixed: "left", width: 120,
         align: mergeTypeColumn ? "center" : undefined,
@@ -628,23 +688,25 @@ export default function InvestmentsPage() {
           style: { verticalAlign: "middle", textAlign: "center" },
         }) : undefined,
       },
-      { title: "Product", dataIndex: "product", key: "product", fixed: "left", width: 250, render: (value: unknown, record: ComparisonRow) => (record.isTotal || record.isSubtotal) ? <Typography.Text strong>{String(value)}</Typography.Text> : String(value) },
+      { title: "Product", dataIndex: "product", key: "product", fixed: "left", width: 250, sorter: true, sortOrder: comparisonSortOrder("product"), render: (value: unknown, record: ComparisonRow) => (record.isTotal || record.isSubtotal) ? <Typography.Text strong>{String(value)}</Typography.Text> : String(value) },
     ];
 
     comparisonMonths.forEach((month, index) => {
       columns.push({
-        title: month, dataIndex: month, key: month, align: "right", width: 150,
+        title: month, dataIndex: month, key: month, align: "right", width: 170,
+        sorter: true, sortOrder: comparisonSortOrder(month),
         render: (value: unknown = 0, record: ComparisonRow) => {
           const formatted = formatBRL(Number(value));
           if (record.isTotal) return <Typography.Text strong style={{ color: "#1890ff" }}>{formatted}</Typography.Text>;
-          if (record.isSubtotal) return <Typography.Text strong>{formatted}</Typography.Text>;
-          return formatted;
+          if (record.isSubtotal) return <><Typography.Text strong>{formatted}</Typography.Text>{renderPct(Number(value), month)}</>;
+          return <>{formatted}{renderPct(Number(value), month)}</>;
         },
       });
       if (index < comparisonMonths.length - 1) {
         const curr = month, next = comparisonMonths[index + 1];
         columns.push({
           title: `Δ ${month.substring(5)} → ${next.substring(5)}`, key: `variance_${index}`, align: "right", width: 130,
+          sorter: true, sortOrder: comparisonSortOrder(`variance_${index}`),
           render: (_: unknown, record: ComparisonRow) => {
             const variance = Number(record[next] ?? 0) - Number(record[curr] ?? 0);
             if (variance === 0) return <Typography.Text type="secondary" style={{ fontSize: 11 }}><Minus size={10} /></Typography.Text>;
@@ -658,8 +720,20 @@ export default function InvestmentsPage() {
     return columns;
   };
 
-  const getDetailedComparisonColumns = () => {
+  const getDetailedComparisonColumns = (rows?: DetailedComparisonRow[]) => {
     const isAgg = (r: DetailedComparisonRow) => r.isTotal || r.isSubtotal || r.isProductRow;
+    const monthTotals: Record<string, number> = {};
+    const totalRowForPct = rows?.find((r) => r.isTotal);
+    comparisonMonths.forEach((m) => { monthTotals[m] = Number(totalRowForPct?.[m]) || 0; });
+    const renderPct = (value: number, month: string) => {
+      const total = monthTotals[month];
+      if (!total) return null;
+      return (
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {" "}({((value / total) * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%)
+        </Typography.Text>
+      );
+    };
     const renderVariance = (variance: number, record: DetailedComparisonRow, fmt: (v: number) => string) => {
       if (variance === 0) return <Typography.Text type="secondary" style={{ fontSize: 11 }}><Minus size={10} /></Typography.Text>;
       const color = variance > 0 ? "success" as const : "danger" as const;
@@ -667,25 +741,26 @@ export default function InvestmentsPage() {
       return <Typography.Text type={color} strong={isAgg(record) || undefined}>{icon} {fmt(Math.abs(variance))}</Typography.Text>;
     };
 
-    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left"; width?: number; align?: "right"; render?: (value: unknown, record: DetailedComparisonRow) => React.ReactNode }> = [
-      { title: "Product", dataIndex: "product", key: "product", fixed: "left", width: 220, render: (v: unknown, r: DetailedComparisonRow) => (r.isTotal || r.isSubtotal || r.isProductRow) ? <Typography.Text strong>{String(v)}</Typography.Text> : String(v) },
+    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left"; width?: number; align?: "right"; render?: (value: unknown, record: DetailedComparisonRow) => React.ReactNode; sorter?: boolean; sortOrder?: "ascend" | "descend" | null }> = [
+      { title: "Product", dataIndex: "product", key: "product", fixed: "left", width: 220, sorter: true, sortOrder: comparisonSortOrder("product"), render: (v: unknown, r: DetailedComparisonRow) => (r.isTotal || r.isSubtotal || r.isProductRow) ? <Typography.Text strong>{String(v)}</Typography.Text> : String(v) },
       { title: "Nome (Ticker)", dataIndex: "nome", key: "nome", fixed: "left", width: 180, render: (v: unknown) => String(v ?? "") },
     ];
 
     comparisonMonths.forEach((month, index) => {
       columns.push({
-        title: month, dataIndex: month, key: month, align: "right", width: 150,
+        title: month, dataIndex: month, key: month, align: "right", width: 170,
+        sorter: true, sortOrder: comparisonSortOrder(month),
         render: (value: unknown = 0, record: DetailedComparisonRow) => {
           const formatted = formatBRL(Number(value));
           if (record.isTotal) return <Typography.Text strong style={{ color: "#1890ff" }}>{formatted}</Typography.Text>;
-          if (record.isSubtotal || record.isProductRow) return <Typography.Text strong>{formatted}</Typography.Text>;
-          return formatted;
+          if (record.isSubtotal || record.isProductRow) return <><Typography.Text strong>{formatted}</Typography.Text>{renderPct(Number(value), month)}</>;
+          return <>{formatted}{renderPct(Number(value), month)}</>;
         },
       });
       if (index < comparisonMonths.length - 1) {
         const curr = month, next = comparisonMonths[index + 1];
-        columns.push({ title: `Δ Qty ${month.substring(5)}→${next.substring(5)}`, key: `qty_variance_${index}`, align: "right", width: 120, render: (_: unknown, r: DetailedComparisonRow) => { if (isAgg(r)) return ""; return renderVariance(Number(r[`qty_${next}`] ?? 0) - Number(r[`qty_${curr}`] ?? 0), r, (v) => v.toLocaleString("pt-BR", { maximumFractionDigits: 4 })); } });
-        columns.push({ title: `Δ ${month.substring(5)} → ${next.substring(5)}`, key: `variance_detailed_${index}`, align: "right", width: 130, render: (_: unknown, r: DetailedComparisonRow) => renderVariance(Number(r[next] ?? 0) - Number(r[curr] ?? 0), r, formatBRL) });
+        columns.push({ title: `Δ Qty ${month.substring(5)}→${next.substring(5)}`, key: `qty_variance_${index}`, align: "right", width: 120, sorter: true, sortOrder: comparisonSortOrder(`qty_variance_${index}`), render: (_: unknown, r: DetailedComparisonRow) => { if (isAgg(r)) return ""; return renderVariance(Number(r[`qty_${next}`] ?? 0) - Number(r[`qty_${curr}`] ?? 0), r, (v) => v.toLocaleString("pt-BR", { maximumFractionDigits: 4 })); } });
+        columns.push({ title: `Δ ${month.substring(5)} → ${next.substring(5)}`, key: `variance_detailed_${index}`, align: "right", width: 130, sorter: true, sortOrder: comparisonSortOrder(`variance_detailed_${index}`), render: (_: unknown, r: DetailedComparisonRow) => renderVariance(Number(r[next] ?? 0) - Number(r[curr] ?? 0), r, formatBRL) });
       }
     });
     return columns;
@@ -1014,7 +1089,8 @@ export default function InvestmentsPage() {
                       }
                     }
                     if (!showSubtotals) rows = rows.filter((r) => !r.isSubtotal);
-                    return <Table columns={getComparisonColumns(rows)} dataSource={rows} pagination={false} size="small" scroll={{ x: 1200 }} rowClassName={(r) => r.isTotal ? "total-row" : r.isSubtotal ? "subtotal-row" : ""} />;
+                    rows = sortComparisonRows(rows);
+                    return <Table columns={getComparisonColumns(rows)} dataSource={rows} pagination={false} size="small" scroll={{ x: 1200 }} onChange={handleComparisonTableChange} rowClassName={(r) => r.isTotal ? "total-row" : r.isSubtotal ? "subtotal-row" : ""} />;
                   })()
                 ) : (
                   <>
@@ -1034,7 +1110,8 @@ export default function InvestmentsPage() {
                         }
                       }
                       if (!showSubtotals) rows = rows.filter((r) => !r.isSubtotal);
-                      return <Table columns={getDetailedComparisonColumns()} dataSource={rows} pagination={false} size="small" scroll={{ x: 1400 }} expandable={{ expandedRowKeys: detailedExpandedKeys, onExpandedRowsChange: (keys) => setDetailedExpandedKeys(keys as unknown as string[]), rowExpandable: (r: DetailedComparisonRow) => !!(r.children && r.children.length > 0) }} rowClassName={(r) => r.isTotal ? "total-row" : (r.isSubtotal || r.isProductRow) ? "subtotal-row" : ""} />;
+                      rows = sortComparisonRows(rows);
+                      return <Table columns={getDetailedComparisonColumns(rows)} dataSource={rows} pagination={false} size="small" scroll={{ x: 1400 }} onChange={handleComparisonTableChange} expandable={{ expandedRowKeys: detailedExpandedKeys, onExpandedRowsChange: (keys) => setDetailedExpandedKeys(keys as unknown as string[]), rowExpandable: (r: DetailedComparisonRow) => !!(r.children && r.children.length > 0) }} rowClassName={(r) => r.isTotal ? "total-row" : (r.isSubtotal || r.isProductRow) ? "subtotal-row" : ""} />;
                     })()}
                   </>
                 )
