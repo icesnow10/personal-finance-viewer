@@ -56,24 +56,27 @@ function VisorCard({ children, style }: { children: React.ReactNode; style?: Rea
 }
 
 /* ── Section header with link ─────────────────────────────────── */
-function SectionHead({ title, linkText, href }: { title: string; linkText?: string; href?: string }) {
+function SectionHead({ title, linkText, href, extra }: { title: string; linkText?: string; href?: string; extra?: React.ReactNode }) {
   const router = useRouter();
   return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, gap: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
         <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, color: "#8c8c8c" }}>
           {title}
         </span>
         <Info size={13} color="#bfbfbf" />
       </div>
-      {linkText && href && (
-        <span
-          onClick={() => router.push(href)}
-          style={{ fontSize: 12, color: "#6366f1", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontWeight: 500 }}
-        >
-          {linkText} <ExternalLink size={12} />
-        </span>
-      )}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+        {extra}
+        {linkText && href && (
+          <span
+            onClick={() => router.push(href)}
+            style={{ fontSize: 12, color: "#6366f1", cursor: "pointer", display: "flex", alignItems: "center", gap: 4, fontWeight: 500 }}
+          >
+            {linkText} <ExternalLink size={12} />
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -821,9 +824,39 @@ function PartialResultCard({ data, previousData }: { data: BudgetData; previousD
   // green net headline doesn't hide that one envelope is over.
   const overBuckets = spendingBuckets.filter((b) => b.actualAmount - b.targetAmount > 0.01);
 
+  // Pending (not-yet-posted) transactions still on open card bills. While any remain, the
+  // partial result can still shift, so we surface a top-right warning on the card.
+  const pendingCount = useMemo(
+    () =>
+      (data.transactions ?? []).filter(
+        (t) => (t as { status?: string }).status === "pending" && !(t as { provisional?: boolean }).provisional
+      ).length,
+    [data]
+  );
+
   return (
     <VisorCard>
-      <SectionHead title="Resultado Parcial" linkText="fluxo de caixa" href="/cashflow" />
+      <SectionHead
+        title="Resultado Parcial"
+        linkText="fluxo de caixa"
+        href="/cashflow"
+        extra={
+          pendingCount > 0 ? (
+            <span
+              title={`${pendingCount} transação(ões) ainda pendente(s) — fatura em aberto; os valores podem mudar`}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 4,
+                fontSize: 11, fontWeight: 600, color: "#d46b08",
+                background: "rgba(250,140,22,0.12)", border: "1px solid rgba(250,140,22,0.35)",
+                borderRadius: 6, padding: "1px 7px", lineHeight: "16px",
+              }}
+            >
+              <span aria-hidden>⚠</span>
+              {pendingCount} pendente{pendingCount > 1 ? "s" : ""}
+            </span>
+          ) : undefined
+        }
+      />
 
       {/* Big value: net balance across spending buckets (available − overspent). */}
       <div style={{ marginBottom: 4, display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>

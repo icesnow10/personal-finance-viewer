@@ -49,6 +49,7 @@ No test suite is configured.
 - `skipped[]` — internal transfers excluded from totals
 - `intentional_rdb_investments` — large lump-sum investments tracked separately, NOT in expense totals
 - `partial: true` + `data_through` — marks months with incomplete data
+- `status` (`"posted" | "pending"`) — per-row flag from the plugin. Credit charges are `pending` while the bill is open, `posted` once it closes. Carried through `normalizeBudget` (baseTx allow-list), `flattenTransactions`, and `FlatTransaction`. Missing status defaults to `posted`. Surfaced as a **Status** column + inline "Pendente" tag in the transactions table, and as a top-right warning badge on the overview **Resultado Parcial** card when any pending rows remain.
 
 ### Computation layer (`src/lib/computations.ts`)
 

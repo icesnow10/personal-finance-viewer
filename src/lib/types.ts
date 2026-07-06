@@ -79,9 +79,12 @@ export interface Transaction {
   category?: string | null;
   subcategory?: string | null;
   provisional?: boolean;
+  status?: TransactionStatus;
   totalInstallments?: number;
   installmentNumber?: number;
 }
+
+export type TransactionStatus = "posted" | "pending";
 
 export interface BudgetTransaction extends Transaction {
   id: string;

@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useCallback } from "react";
 import { Card, Typography, Space, Row, Col, Button, Modal } from "antd";
-import { Download, RefreshCw } from "lucide-react";
+import { Download, RefreshCw, FileJson, Copy } from "lucide-react";
 import { useBudget } from "@/hooks/useBudget";
 import { flattenTransactions } from "@/context/BudgetContext";
 import { MonthSelector } from "@/components/shared/MonthSelector";
@@ -27,6 +27,9 @@ export default function TransactionsV2Page() {
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
   const [filters, setFilters] = useState<TransactionFilters>(DEFAULT_FILTERS);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [jsonModal, setJsonModal] = useState<{ open: boolean; text: string; file: string; loading: boolean; error: string | null }>({
+    open: false, text: "", file: "", loading: false, error: null,
+  });
   const isMobile = useIsMobile();
   const { refreshing } = useRefresh();
   useRegisterRefresh(refresh, [refresh]);
@@ -99,6 +102,26 @@ export default function TransactionsV2Page() {
     URL.revokeObjectURL(url);
   }, [filtered, data]);
 
+  const openJsonSource = useCallback(async () => {
+    const month = data?.month;
+    if (!month) return;
+    setJsonModal({ open: true, text: "", file: "", loading: true, error: null });
+    try {
+      const q = new URLSearchParams({ month });
+      const household = (data as { household?: string })?.household;
+      if (household) q.set("household", household);
+      const res = await fetch(`/api/budget-source?${q.toString()}`);
+      const file = res.headers.get("X-Source-File") || `budget_${month}.json`;
+      const raw = await res.text();
+      if (!res.ok) throw new Error(raw || `HTTP ${res.status}`);
+      let pretty = raw;
+      try { pretty = JSON.stringify(JSON.parse(raw), null, 2); } catch { /* keep raw */ }
+      setJsonModal({ open: true, text: pretty, file, loading: false, error: null });
+    } catch (e) {
+      setJsonModal({ open: true, text: "", file: "", loading: false, error: (e as Error).message });
+    }
+  }, [data]);
+
   if (loading) return null;
   if (!data) return <EmptyState />;
 
@@ -118,8 +141,46 @@ export default function TransactionsV2Page() {
         <Space wrap style={isMobile ? { width: "100%", overflowX: "auto" } : undefined}>
           <MonthSelector months={monthPills} selected={data.month} onSelect={setSelectedMonth} />
           <Button icon={<Download size={14} />} onClick={handleExport} size="small">CSV</Button>
+          <Button icon={<FileJson size={14} />} onClick={openJsonSource} size="small" title="Ver o JSON fonte deste mês">JSON</Button>
         </Space>
       </div>
+
+      <Modal
+        open={jsonModal.open}
+        onCancel={() => setJsonModal((s) => ({ ...s, open: false }))}
+        footer={null}
+        width={860}
+        title={
+          <Space>
+            <FileJson size={16} />
+            <span>JSON fonte {jsonModal.file ? `· ${jsonModal.file}` : ""}</span>
+            {jsonModal.text && (
+              <Button
+                size="small"
+                icon={<Copy size={13} />}
+                onClick={() => navigator.clipboard?.writeText(jsonModal.text)}
+              >
+                Copiar
+              </Button>
+            )}
+          </Space>
+        }
+      >
+        {jsonModal.loading ? (
+          <Text type="secondary">Carregando…</Text>
+        ) : jsonModal.error ? (
+          <Text type="danger">{jsonModal.error}</Text>
+        ) : (
+          <pre
+            style={{
+              maxHeight: "65vh", overflow: "auto", margin: 0, fontSize: 12, lineHeight: 1.5,
+              background: "rgba(127,127,127,0.08)", padding: 12, borderRadius: 8,
+            }}
+          >
+            {jsonModal.text}
+          </pre>
+        )}
+      </Modal>
 
       <Row gutter={[8, 8]} style={{ marginBottom: 16 }}>
         <Col xs={12} sm={8} md={isMobile ? 12 : undefined} lg={undefined} flex={isMobile ? undefined : "1 1 0"}>

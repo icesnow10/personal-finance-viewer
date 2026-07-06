@@ -66,6 +66,11 @@ export function TransactionsTable({
                       Provisionado
                     </Tag>
                   )}
+                  {record.status === "pending" && !record.provisional && (
+                    <Tag color="orange" style={{ fontSize: 10, lineHeight: "16px", padding: "0 4px", margin: 0 }}>
+                      Pendente
+                    </Tag>
+                  )}
                 </div>
                 <Text type="secondary" style={{ fontSize: 11 }}>
                   {record.category} &middot; {record.subcategory}
@@ -160,6 +165,25 @@ export function TransactionsTable({
             {t}
           </Tag>
         ),
+      },
+      {
+        title: "Status",
+        dataIndex: "status",
+        key: "status",
+        width: 100,
+        filters: [
+          { text: "Posted", value: "posted" },
+          { text: "Pending", value: "pending" },
+        ],
+        onFilter: (value, record) => (record.status ?? "posted") === value,
+        render: (s: string | undefined) => {
+          const pending = s === "pending";
+          return (
+            <Tag color={pending ? "orange" : "green"} style={{ fontSize: 10, textTransform: "uppercase" }}>
+              {pending ? "pending" : "posted"}
+            </Tag>
+          );
+        },
       },
     ],
     [banks, accounts, holders, types, redacted]

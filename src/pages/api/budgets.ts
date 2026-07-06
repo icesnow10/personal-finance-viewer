@@ -141,6 +141,7 @@ function normalizeBudget(raw: unknown, meta: BudgetFileMeta): JsonRecord {
         category: tx.category ?? null,
         subcategory: tx.subcategory ?? null,
         provisional: Boolean(tx.provisional),
+        status: tx.status === "pending" ? "pending" : "posted",
       };
       if (tx.totalInstallments) {
         baseTx.totalInstallments = tx.totalInstallments;

@@ -48,6 +48,7 @@ export function flattenTransactions(data: BudgetData): FlatTransaction[] {
               ? tx.subcategory || "Unknown"
               : tx.subcategory || "Unknown",
       type: tx.type,
+      status: tx.status === "pending" ? "pending" : "posted",
       ...(tx.totalInstallments != null ? { totalInstallments: tx.totalInstallments } : {}),
       ...(tx.installmentNumber != null ? { installmentNumber: tx.installmentNumber } : {}),
       ...(tx.provisional ? { provisional: true } : {}),
