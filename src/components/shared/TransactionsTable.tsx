@@ -12,6 +12,13 @@ const BANK_COLORS = ["blue", "green", "volcano", "purple", "cyan", "magenta", "g
 const ACCOUNT_COLORS = ["gold", "lime", "cyan", "purple", "magenta", "volcano", "geekblue", "orange", "green"];
 const HOLDER_COLORS = ["magenta", "volcano", "orange", "gold", "green", "cyan", "blue", "geekblue", "purple"];
 
+// The three canonical budget buckets -> display label + tag color.
+const BUCKET_META: Record<string, { label: string; color: string }> = {
+  custos_fixos: { label: "Custos Fixos", color: "blue" },
+  conforto: { label: "Conforto", color: "orange" },
+  liberdade_financeira: { label: "Lib. Financeira", color: "green" },
+};
+
 export interface TransactionsTableProps {
   transactions: FlatTransaction[];
   redacted?: boolean;
@@ -23,11 +30,11 @@ export interface TransactionsTableProps {
   showCard?: boolean;
 }
 
-export function TransactionsTable({
+function TransactionsTableInner({
   transactions,
   redacted = false,
   rowSelection,
-  pageSize = 200,
+  pageSize = 50,
   showCard = true,
 }: TransactionsTableProps) {
   const isMobile = useIsMobile();
@@ -35,6 +42,14 @@ export function TransactionsTable({
   const accounts = useMemo(() => Array.from(new Set(transactions.map((t) => t.account_number).filter(Boolean))) as string[], [transactions]);
   const holders = useMemo(() => Array.from(new Set(transactions.map((t) => t.holder).filter(Boolean))) as string[], [transactions]);
   const types = useMemo(() => Array.from(new Set(transactions.map((t) => t.type).filter(Boolean))) as string[], [transactions]);
+  const categories = useMemo(
+    () => (Array.from(new Set(transactions.map((t) => t.category).filter(Boolean))) as string[]).sort((a, b) => a.localeCompare(b)),
+    [transactions]
+  );
+  const subcategories = useMemo(
+    () => (Array.from(new Set(transactions.map((t) => t.subcategory).filter(Boolean))) as string[]).sort((a, b) => a.localeCompare(b)),
+    [transactions]
+  );
 
   const allColumns: ColumnsType<FlatTransaction> = useMemo(
     () => [
@@ -51,46 +66,81 @@ export function TransactionsTable({
         title: "Descricao",
         dataIndex: "description",
         key: "description",
+        width: 320,
         ellipsis: true,
         sorter: (a, b) => a.description.localeCompare(b.description),
         render: (desc: string, record: FlatTransaction) => {
           const { emoji } = getCategoryMeta(record.category);
           return (
-            <Space size={8}>
-              <span style={{ fontSize: 14 }}>{emoji}</span>
-              <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <Text style={{ fontSize: 13 }}>{desc}</Text>
-                  {record.provisional && (
-                    <Tag color="purple" style={{ fontSize: 10, lineHeight: "16px", padding: "0 4px", margin: 0 }}>
-                      Provisionado
-                    </Tag>
-                  )}
-                  {record.status === "pending" && !record.provisional && (
-                    <Tag color="orange" style={{ fontSize: 10, lineHeight: "16px", padding: "0 4px", margin: 0 }}>
-                      Pendente
-                    </Tag>
-                  )}
-                </div>
-                <Text type="secondary" style={{ fontSize: 11 }}>
-                  {record.category} &middot; {record.subcategory}
-                </Text>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                <span style={{ fontSize: 14, flexShrink: 0 }}>{emoji}</span>
+                <Text style={{ fontSize: 13 }} ellipsis={{ tooltip: desc }}>{desc}</Text>
+                {record.provisional && (
+                  <Tag color="purple" style={{ fontSize: 10, lineHeight: "16px", padding: "0 4px", margin: 0, flexShrink: 0 }}>
+                    Provisionado
+                  </Tag>
+                )}
+                {record.status === "pending" && !record.provisional && (
+                  <Tag color="orange" style={{ fontSize: 10, lineHeight: "16px", padding: "0 4px", margin: 0, flexShrink: 0 }}>
+                    Pendente
+                  </Tag>
+                )}
               </div>
-            </Space>
+              {(record.category || record.subcategory) && (
+                <Text type="secondary" style={{ fontSize: 11, display: "block" }}>
+                  {record.category}{record.subcategory ? ` · ${record.subcategory}` : ""}
+                </Text>
+              )}
+              <Text
+                copyable={{ text: record.id }}
+                type="secondary"
+                style={{ fontSize: 10, color: "#8c8c8c" }}
+                ellipsis={{ tooltip: record.id }}
+              >
+                {record.id}
+              </Text>
+            </div>
           );
         },
       },
       {
-        title: "ID",
-        dataIndex: "id",
-        key: "id",
-        width: 280,
-        sorter: (a, b) => (a.id || "").localeCompare(b.id || ""),
-        render: (id: string) => (
-          <Text copyable={{ text: id }} style={{ fontSize: 11, color: "#8c8c8c" }}>
-            {id}
-          </Text>
-        ),
+        title: "Categoria",
+        dataIndex: "category",
+        key: "category",
+        width: 170,
+        filters: categories.map((c) => ({ text: c, value: c })),
+        onFilter: (value, record) => record.category === value,
+        sorter: (a, b) => (a.category || "").localeCompare(b.category || ""),
+        render: (c: string) => {
+          if (!c) return <Text type="secondary">--</Text>;
+          const { emoji } = getCategoryMeta(c);
+          return <Text style={{ fontSize: 12 }}><span style={{ marginRight: 4 }}>{emoji}</span>{c}</Text>;
+        },
+      },
+      {
+        title: "Subcategoria",
+        dataIndex: "subcategory",
+        key: "subcategory",
+        width: 160,
+        filters: subcategories.map((s) => ({ text: s, value: s })),
+        onFilter: (value, record) => record.subcategory === value,
+        sorter: (a, b) => (a.subcategory || "").localeCompare(b.subcategory || ""),
+        render: (s: string) => (s ? <Text style={{ fontSize: 12 }}>{s}</Text> : <Text type="secondary">--</Text>),
+      },
+      {
+        title: "Bucket",
+        dataIndex: "bucket",
+        key: "bucket",
+        width: 130,
+        filters: Object.entries(BUCKET_META).map(([value, m]) => ({ text: m.label, value })),
+        onFilter: (value, record) => record.bucket === value,
+        sorter: (a, b) => (a.bucket || "").localeCompare(b.bucket || ""),
+        render: (bkt: string | null | undefined) => {
+          const m = bkt ? BUCKET_META[bkt] : null;
+          if (!m) return <Text type="secondary">--</Text>;
+          return <Tag color={m.color} style={{ fontSize: 11 }}>{m.label}</Tag>;
+        },
       },
       {
         title: "Banco",
@@ -186,7 +236,7 @@ export function TransactionsTable({
         },
       },
     ],
-    [banks, accounts, holders, types, redacted]
+    [banks, accounts, holders, types, categories, subcategories, redacted]
   );
 
   // On mobile, show only Date + Description (with category subline) + Amount.
@@ -198,6 +248,9 @@ export function TransactionsTable({
       .map((c) => {
         if ((c as { key?: string }).key === "date") {
           return { ...c, width: 64, render: (d: string) => (d ? d.slice(5).replace("-", "/") : "—") } as typeof c;
+        }
+        if ((c as { key?: string }).key === "description") {
+          return { ...c, width: undefined } as typeof c;
         }
         return c;
       });
@@ -215,7 +268,7 @@ export function TransactionsTable({
         showSizeChanger: true,
         showTotal: (t) => `${t} itens`,
       }}
-      scroll={isMobile ? undefined : { x: 800 }}
+      scroll={isMobile ? undefined : { x: 1520 }}
       rowSelection={
         rowSelection
           ? {
@@ -243,3 +296,10 @@ export function TransactionsTable({
     tableEl
   );
 }
+
+// Memoized: the table renders a heavy per-row cell (tooltips, copyable id,
+// category lookups). Without memo, every parent re-render (search keystroke,
+// selection change, modal toggle) re-renders all rows. Props are stable
+// references from the parent (transactions/rowSelection are memoized), so the
+// table only re-renders when the data or selection actually changes.
+export const TransactionsTable = React.memo(TransactionsTableInner);

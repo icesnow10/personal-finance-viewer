@@ -314,21 +314,35 @@ export interface DailySpending {
   cumulative: number;
 }
 
-export function getDailySpendingCurve(data: BudgetData): DailySpending[] {
+// `clampDay` folds any transaction dated after that day-of-month onto it, so a
+// partial/open month whose data contains future-scheduled rows (e.g. the credit
+// card's upcoming installments) accumulates them at "today" instead of drawing
+// the curve into the future. Omit it to plot the full month.
+export function getDailySpendingCurve(data: BudgetData, clampDay?: number): DailySpending[] {
   const expenses: { day: number; amount: number }[] = [];
+  const clamp = (day: number) => (clampDay != null ? Math.min(day, clampDay) : day);
+
+  // Rows that don't reflect a real purchase on their stated day are plotted on
+  // day 1: a non-first installment (e.g. 3/10) only lands on this month's bill,
+  // and a provisional row is an estimate for the month, not a dated purchase.
+  // First installments (1/N) and real dated expenses keep their date.
+  const effectiveDay = (tx: { date: string | null; totalInstallments?: number; installmentNumber?: number; provisional?: boolean }) => {
+    const carried = (tx.totalInstallments ?? 0) >= 2 && (tx.installmentNumber ?? 0) > 1;
+    return clamp(carried || tx.provisional ? 1 : dayOfMonth(tx.date as string));
+  };
 
   for (const cat of Object.values(data.expenses.by_category)) {
     for (const sub of Object.values(cat.subcategories)) {
       for (const tx of sub.transactions) {
         if (tx.date) {
-          expenses.push({ day: dayOfMonth(tx.date), amount: tx.amount });
+          expenses.push({ day: effectiveDay(tx), amount: tx.amount });
         }
       }
     }
   }
   for (const tx of data.expenses.unclassified ?? []) {
     if (tx.date) {
-      expenses.push({ day: dayOfMonth(tx.date), amount: tx.amount });
+      expenses.push({ day: effectiveDay(tx), amount: tx.amount });
     }
   }
 

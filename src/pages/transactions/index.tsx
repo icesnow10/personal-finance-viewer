@@ -53,6 +53,20 @@ export default function TransactionsV2Page() {
 
   const filtered = useMemo(() => applyTransactionFilters(flatTx, filters), [flatTx, filters]);
 
+  // Table-only date remap: an installment that isn't the first (e.g. 3/10) only
+  // lands on this month's bill — it isn't the real purchase date — so display it
+  // on day 1 of the month. The first installment (1/N) keeps its actual date.
+  // Only the table view is affected; stats, export and selection use `filtered`.
+  const tableData = useMemo(
+    () =>
+      filtered.map((t) =>
+        (t.totalInstallments ?? 0) >= 2 && (t.installmentNumber ?? 0) > 1 && t.date
+          ? { ...t, date: `${t.date.slice(0, 7)}-01` }
+          : t
+      ),
+    [filtered]
+  );
+
   const selectionSummary = useMemo(() => {
     if (selectedRowKeys.length === 0) return null;
     const keySet = new Set(selectedRowKeys);
@@ -67,6 +81,11 @@ export default function TransactionsV2Page() {
     }
     return { count, income, expense, net: income - expense };
   }, [selectedRowKeys, filtered]);
+
+  const rowSelection = useMemo(
+    () => ({ selectedRowKeys, onChange: setSelectedRowKeys }),
+    [selectedRowKeys]
+  );
 
   const stats = useMemo(() => {
     if (!data) return { income: 0, expenses: 0, net: 0, count: 0, provisioned: 0 };
@@ -255,12 +274,9 @@ export default function TransactionsV2Page() {
       )}
 
       <TransactionsTable
-        transactions={filtered}
+        transactions={tableData}
         redacted={redacted}
-        rowSelection={{
-          selectedRowKeys,
-          onChange: setSelectedRowKeys,
-        }}
+        rowSelection={rowSelection}
       />
 
       <Modal

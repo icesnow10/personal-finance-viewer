@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useCallback, useRef, useEffect } from "react";
-import { Typography, theme, Modal, Segmented, Checkbox, InputNumber } from "antd";
+import { Typography, theme, Modal, Segmented, Checkbox, InputNumber, Slider } from "antd";
 import {
   AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer,
   ReferenceLine, ReferenceDot, Label,
@@ -106,7 +106,18 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
   const { redacted } = useRedact();
   const r = (v: number) => redacted ? REDACTED : formatBRL(v);
   const rCompact = (v: number) => redacted ? "•••••" : formatCompact(v);
-  const currentCurve = useMemo(() => getDailySpendingCurve(data), [data]);
+  // When viewing the current calendar month, stop the line at today and fold any
+  // future-dated rows (upcoming card installments) onto today. Past months plot in full.
+  const clampDay = useMemo(() => {
+    const now = new Date();
+    const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    if (data.month !== curMonth) return undefined;
+    const [y, m] = data.month.split("-").map(Number);
+    const daysInMonth = new Date(y, m, 0).getDate();
+    return Math.min(now.getDate(), daysInMonth);
+  }, [data.month]);
+
+  const currentCurve = useMemo(() => getDailySpendingCurve(data, clampDay), [data, clampDay]);
   const previousCurve = useMemo(
     () => (previousData ? getDailySpendingCurve(previousData) : null),
     [previousData]
@@ -152,11 +163,13 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
     }));
   }, [currentCurve, previousCurve, avg3Curve]);
 
-  // Find last day with spending data
+  // Find last day with spending data. For the current month, cap at today so the
+  // line ends on today's dot (future rows were already folded onto clampDay).
   const lastDataDay = useMemo(() => {
+    if (clampDay != null) return clampDay;
     if (data.data_through) return dayOfMonth(data.data_through);
     return pace.daysElapsed;
-  }, [data, pace]);
+  }, [clampDay, data, pace]);
 
   const rawLastValue = chartData[lastDataDay - 1]?.current ?? 0;
   const lastCurrentValue = Math.round(rawLastValue * 100) / 100;
@@ -193,7 +206,7 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
   }, []);
 
   return (
-    <VisorCard>
+    <VisorCard style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <SectionHead title="Ritmo de Gastos" linkText="Ver todas" href="/transactions" />
 
       {/* Hero: total spent this month (swapped from Resultado Parcial). */}
@@ -211,7 +224,7 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
         )}
         {provisionedAmount > 0 && (
           <div style={{ fontSize: 12, color: "#8c8c8c", marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            nao inclui
+            inclui
             <span style={{
               fontSize: 12, color: "#722ed1", fontWeight: 600,
               background: "rgba(114,46,209,0.1)", padding: "2px 8px", borderRadius: 4,
@@ -243,8 +256,8 @@ function SpendingPaceCard({ data, previousData, allMonths }: { data: BudgetData;
       </div>
 
       {/* Chart */}
-      <div ref={chartWrapperRef} style={{ width: "100%" }}>
-      <ResponsiveContainer width="100%" height={360}>
+      <div ref={chartWrapperRef} style={{ width: "100%", flex: 1, minHeight: 360 }}>
+      <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={fullChartData} margin={{ left: 10, right: 20, top: 10, bottom: 5 }}>
           <defs>
             <linearGradient id="paceGradCurrent" x1="0" y1="0" x2="0" y2="1">
@@ -3127,13 +3140,36 @@ function MonthCompositionCard({ data }: { data: BudgetData }) {
 }
 
 /* ── Top 10 Categorias - Linha temporal ───────────────────────── */
+// Persisted display prefs for the trend card (localStorage).
+const TREND_PREFS_KEY = "budget_topcat_trend";
+const TREND_TICK_STEPS = [1000, 3000, 6000] as const;
+type TrendPrefs = { excludeCurrent: boolean; hidden: string[]; tickStep: number };
+const TREND_DEFAULT_PREFS: TrendPrefs = { excludeCurrent: true, hidden: [], tickStep: 3000 };
+function loadTrendPrefs(): TrendPrefs {
+  if (typeof window === "undefined") return TREND_DEFAULT_PREFS;
+  try {
+    const saved = localStorage.getItem(TREND_PREFS_KEY);
+    if (saved) {
+      const p = JSON.parse(saved);
+      return {
+        excludeCurrent: typeof p.excludeCurrent === "boolean" ? p.excludeCurrent : TREND_DEFAULT_PREFS.excludeCurrent,
+        hidden: Array.isArray(p.hidden) ? p.hidden.filter((x: unknown) => typeof x === "string") : [],
+        tickStep: (TREND_TICK_STEPS as readonly number[]).includes(p.tickStep) ? p.tickStep : TREND_DEFAULT_PREFS.tickStep,
+      };
+    }
+  } catch {}
+  return TREND_DEFAULT_PREFS;
+}
+
 function TopCategoriesTrendCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; currentMonth: string }) {
   const { token } = theme.useToken();
   const { redacted } = useRedact();
   const r = (v: number) => redacted ? REDACTED : formatBRL(v);
   const isMobile = useIsMobile();
 
-  const [excludeCurrent, setExcludeCurrent] = useState(false);
+  // Display prefs (persisted in localStorage): default is to disregard the current month.
+  const [excludeCurrent, setExcludeCurrent] = useState<boolean>(() => loadTrendPrefs().excludeCurrent);
+  const [tickStep, setTickStep] = useState<number>(() => loadTrendPrefs().tickStep);
 
   // Sort months ascending, last 12. Optionally drop the current month.
   const months = useMemo(() => {
@@ -3182,8 +3218,8 @@ function TopCategoriesTrendCard({ allMonths, currentMonth }: { allMonths: Budget
     "#13c2c2", "#fa541c", "#a0d911", "#1d3557", "#f5222d",
   ];
 
-  // Visibility per category (default: all visible).
-  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  // Visibility per category — restored from localStorage so hidden categories stay hidden across reloads.
+  const [hidden, setHidden] = useState<Set<string>>(() => new Set(loadTrendPrefs().hidden));
   const toggleCat = useCallback((cat: string) => {
     setHidden((prev) => {
       const next = new Set(prev);
@@ -3191,6 +3227,16 @@ function TopCategoriesTrendCard({ allMonths, currentMonth }: { allMonths: Budget
       return next;
     });
   }, []);
+
+  // Persist display prefs (exclude-current, tick spacing, hidden categories) whenever they change.
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        TREND_PREFS_KEY,
+        JSON.stringify({ excludeCurrent, tickStep, hidden: [...hidden] })
+      );
+    } catch {}
+  }, [excludeCurrent, tickStep, hidden]);
 
   // Highlighted categories: transient hover (single) overrides pinned set (multi).
   const [hoveredCat, setHoveredCat] = useState<string | null>(null);
@@ -3214,17 +3260,51 @@ function TopCategoriesTrendCard({ allMonths, currentMonth }: { allMonths: Budget
     0
   );
 
+  // Y-axis tick spacing controlled by the slider (1k / 3k / 6k): fixed gridline gaps at
+  // multiples of tickStep spanning the visible data range.
+  const yAxis = useMemo(() => {
+    let lo = 0, hi = 0;
+    for (const row of chartData) {
+      for (const cat of topCategories) {
+        if (hidden.has(cat)) continue;
+        const v = row[cat];
+        if (typeof v === "number") { if (v < lo) lo = v; if (v > hi) hi = v; }
+      }
+    }
+    const floorLo = Math.floor(lo / tickStep) * tickStep;
+    let ceilHi = Math.ceil(hi / tickStep) * tickStep;
+    if (ceilHi === floorLo) ceilHi = floorLo + tickStep;
+    const ticks: number[] = [];
+    for (let t = floorLo; t <= ceilHi + 1e-6; t += tickStep) ticks.push(t);
+    return { ticks, domain: [floorLo, ceilHi] as [number, number] };
+  }, [chartData, topCategories, hidden, tickStep]);
+
   return (
     <VisorCard>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <SectionHead title="Top 10 Categorias - Evolucao" />
-        <label style={{
-          display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer",
-          fontSize: 12, color: "#8c8c8c", userSelect: "none",
-        }}>
-          <Checkbox checked={excludeCurrent} onChange={(e) => setExcludeCurrent(e.target.checked)} />
-          Desconsiderar mes atual
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 12, color: "#8c8c8c", userSelect: "none", whiteSpace: "nowrap" }}>Espacamento</span>
+            <Slider
+              style={{ width: 120, margin: "0 4px" }}
+              min={1000}
+              max={6000}
+              step={null}
+              marks={{ 1000: "1k", 3000: "3k", 6000: "6k" }}
+              value={tickStep}
+              onChange={(v) => { if (typeof v === "number") setTickStep(v); }}
+              tooltip={{ open: false }}
+            />
+          </div>
+          <label style={{
+            display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer",
+            fontSize: 12, color: "#8c8c8c", userSelect: "none",
+          }}>
+            <Checkbox checked={excludeCurrent} onChange={(e) => setExcludeCurrent(e.target.checked)} />
+            Desconsiderar mes atual
+          </label>
+        </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 380px", gap: 16, marginTop: 12, alignItems: "stretch" }}>
         <div style={{ height: isMobile ? 320 : 520 }}>
@@ -3245,6 +3325,10 @@ function TopCategoriesTrendCard({ allMonths, currentMonth }: { allMonths: Budget
                 tick={{ fill: "#8c8c8c" }}
                 tickFormatter={(v) => redacted ? "•••" : `R$ ${(v / 1000).toFixed(0)}k`}
                 width={70}
+                domain={yAxis.domain}
+                ticks={yAxis.ticks}
+                interval={0}
+                allowDecimals={false}
               />
               <Tooltip
                 formatter={(v: number, name: string) => [r(v), name]}
@@ -3394,11 +3478,15 @@ function IncomeBarCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; c
   };
 
   const chartData = useMemo(() => {
-    return months.map((m) => ({
-      month: m.month,
-      label: labelOf(m.month),
-      income: Math.round(getBudgetSummary(m).total_income * 100) / 100,
-    }));
+    return months.map((m) => {
+      const summary = getBudgetSummary(m);
+      return {
+        month: m.month,
+        label: labelOf(m.month),
+        income: Math.round(summary.total_income * 100) / 100,
+        expenses: Math.round(summary.total_expenses * 100) / 100,
+      };
+    });
   }, [months]);
 
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonth);
@@ -3417,7 +3505,7 @@ function IncomeBarCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; c
 
   return (
     <VisorCard>
-      <SectionHead title="Receita por mes" />
+      <SectionHead title="Fluxo de Caixa" />
       <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>
         <div style={{ height: 320 }}>
           <ResponsiveContainer width="100%" height="100%">
@@ -3439,7 +3527,7 @@ function IncomeBarCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; c
                 width={70}
               />
               <Tooltip
-                formatter={(v: number) => [r(v), "Receita"]}
+                formatter={(v: number, name: string) => [r(v), name === "expenses" ? "Despesa" : "Receita"]}
                 labelFormatter={(l) => `Mes: ${l}`}
                 cursor={{ fill: "rgba(99,102,241,0.06)" }}
                 contentStyle={{
@@ -3451,8 +3539,18 @@ function IncomeBarCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; c
                 }}
                 labelStyle={{ color: "#1f1f1f", fontWeight: 600, marginBottom: 4 }}
               />
+              <Legend
+                verticalAlign="top"
+                height={28}
+                iconType="circle"
+                iconSize={9}
+                formatter={(value) => (
+                  <span style={{ fontSize: 12, color: "#8c8c8c" }}>{value === "expenses" ? "Despesa" : "Receita"}</span>
+                )}
+              />
               <Bar
                 dataKey="income"
+                name="income"
                 radius={[4, 4, 0, 0]}
                 onClick={(d: { month?: string }) => { if (d?.month) setSelectedMonth(d.month); }}
               >
@@ -3466,7 +3564,27 @@ function IncomeBarCard({ allMonths, currentMonth }: { allMonths: BudgetData[]; c
                 <LabelList
                   dataKey="income"
                   position="top"
-                  style={{ fontSize: 11, fontWeight: 600, fill: "#52c41a" }}
+                  style={{ fontSize: 10, fontWeight: 600, fill: "#52c41a" }}
+                  formatter={(v: number) => redacted ? "•••" : `R$ ${(v / 1000).toFixed(1)}k`}
+                />
+              </Bar>
+              <Bar
+                dataKey="expenses"
+                name="expenses"
+                radius={[4, 4, 0, 0]}
+                onClick={(d: { month?: string }) => { if (d?.month) setSelectedMonth(d.month); }}
+              >
+                {chartData.map((d) => (
+                  <Cell
+                    key={d.month}
+                    fill={d.month === selectedMonth ? "#ff4d4f" : "rgba(255,77,79,0.4)"}
+                    cursor="pointer"
+                  />
+                ))}
+                <LabelList
+                  dataKey="expenses"
+                  position="top"
+                  style={{ fontSize: 10, fontWeight: 600, fill: "#ff4d4f" }}
                   formatter={(v: number) => redacted ? "•••" : `R$ ${(v / 1000).toFixed(1)}k`}
                 />
               </Bar>
@@ -3641,8 +3759,6 @@ function WealthEvolutionCard({ allMonths }: { allMonths: BudgetData[] }) {
   const { redacted } = useRedact();
   const r = (v: number) => redacted ? REDACTED : formatBRL(v);
 
-  const [view, setView] = useState<"cumulative" | "monthly">("cumulative");
-
   const monthLabels = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
   const labelOf = (m: string) => {
     const [y, mm] = m.split("-").map(Number);
@@ -3669,39 +3785,16 @@ function WealthEvolutionCard({ allMonths }: { allMonths: BudgetData[] }) {
   const firstCumulative = chartData.length > 0 ? chartData[0].cumulative : 0;
   const delta = totalCumulative - firstCumulative;
 
-  const dataKey = view === "cumulative" ? "cumulative" : "monthly";
-  const seriesLabel = view === "cumulative" ? "Patrimonio acumulado" : "Patrimonio mensal";
+  // Average of the monthly net across the displayed months.
+  const avgMonthly = chartData.length > 0
+    ? Math.round((chartData.reduce((s, d) => s + d.monthly, 0) / chartData.length) * 100) / 100
+    : 0;
 
-  return (
-    <VisorCard>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-        <SectionHead title="Evolucao de Patrimonio" />
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <Segmented
-            size="small"
-            value={view}
-            onChange={(v) => setView(v as "cumulative" | "monthly")}
-            options={[
-              { label: "Acumulado", value: "cumulative" },
-              { label: "Mensal", value: "monthly" },
-            ]}
-          />
-          {view === "cumulative" && (
-            <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-              <span style={{ fontSize: 18, fontWeight: 700, color: totalCumulative >= 0 ? "#52c41a" : "#ff4d4f" }}>
-                {r(totalCumulative)}
-              </span>
-              {chartData.length > 1 && (
-                <span style={{ fontSize: 12, color: delta >= 0 ? "#52c41a" : "#ff4d4f", fontWeight: 500 }}>
-                  ({delta >= 0 ? "+" : ""}{r(delta)})
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div style={{ height: 360, marginTop: 12 }}>
+  const renderChart = (view: "cumulative" | "monthly") => {
+    const dataKey = view === "cumulative" ? "cumulative" : "monthly";
+    const seriesLabel = view === "cumulative" ? "Patrimonio acumulado" : "Patrimonio mensal";
+    return (
+      <div style={{ height: 300, marginTop: 8 }}>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={chartData} margin={{ left: 10, right: 20, top: 16, bottom: 5 }}>
             <CartesianGrid stroke="rgba(140,140,140,0.15)" strokeDasharray="3 3" vertical={false} />
@@ -3734,6 +3827,21 @@ function WealthEvolutionCard({ allMonths }: { allMonths: BudgetData[] }) {
               labelStyle={{ color: token.colorText, fontWeight: 600, marginBottom: 4 }}
             />
             <ReferenceLine y={0} stroke="#bfbfbf" strokeDasharray="2 2" />
+            {view === "monthly" && chartData.length > 0 && (
+              <ReferenceLine
+                y={avgMonthly}
+                stroke="#6366f1"
+                strokeDasharray="5 4"
+                strokeWidth={1.5}
+                label={{
+                  value: redacted ? "média •••" : `média R$ ${(avgMonthly / 1000).toFixed(1)}k`,
+                  position: "insideTopRight",
+                  fill: "#6366f1",
+                  fontSize: 11,
+                  fontWeight: 600,
+                }}
+              />
+            )}
             <Bar dataKey={dataKey} radius={[4, 4, 0, 0]}>
               {chartData.map((d, i) => {
                 let isNegative: boolean;
@@ -3757,6 +3865,48 @@ function WealthEvolutionCard({ allMonths }: { allMonths: BudgetData[] }) {
           </BarChart>
         </ResponsiveContainer>
       </div>
+    );
+  };
+
+  const subHeader = (label: string, stat: React.ReactNode) => (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginTop: 8 }}>
+      <span style={{ fontSize: 12, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5, color: "#8c8c8c" }}>
+        {label}
+      </span>
+      {stat}
+    </div>
+  );
+
+  return (
+    <VisorCard>
+      <SectionHead title="Evolucao de Patrimonio" />
+
+      {/* Acumulado */}
+      {subHeader("Acumulado", (
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <span style={{ fontSize: 18, fontWeight: 700, color: totalCumulative >= 0 ? "#52c41a" : "#ff4d4f" }}>
+            {r(totalCumulative)}
+          </span>
+          {chartData.length > 1 && (
+            <span style={{ fontSize: 12, color: delta >= 0 ? "#52c41a" : "#ff4d4f", fontWeight: 500 }}>
+              ({delta >= 0 ? "+" : ""}{r(delta)})
+            </span>
+          )}
+        </div>
+      ))}
+      {renderChart("cumulative")}
+
+      {/* Mensal */}
+      {subHeader("Mensal", (
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ fontSize: 12, color: "#8c8c8c" }}>média</span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: avgMonthly >= 0 ? "#52c41a" : "#ff4d4f" }}>
+            {r(avgMonthly)}
+          </span>
+          <span style={{ fontSize: 12, color: "#8c8c8c" }}>/mês</span>
+        </div>
+      ))}
+      {renderChart("monthly")}
     </VisorCard>
   );
 }
@@ -3812,7 +3962,7 @@ export default function OverviewPage() {
       </div>
 
       {/* Row 1: col 1 = Resultado Parcial + Buckets (stacked); col 2 = Ritmo de Gastos */}
-      <div style={{ display: "grid", gridTemplateColumns: cols2, gap: 16, marginBottom: 16, alignItems: "start" }}>
+      <div style={{ display: "grid", gridTemplateColumns: cols2, gap: 16, marginBottom: 16, alignItems: "stretch" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <PartialResultCard data={data} previousData={previousData} />
           <BudgetBucketsCard data={data} />

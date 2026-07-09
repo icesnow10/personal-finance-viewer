@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Card, Input, InputNumber, Segmented, Select, Space, Typography, Button, theme } from "antd";
 import { Search, XCircle } from "lucide-react";
 import { getCategoryMeta } from "@/lib/category-meta";
@@ -10,11 +10,19 @@ export type ViewMode = "all" | "income" | "expense" | "unclassified" | "skipped"
 export type ProvisionalFilter = "all" | "only" | "exclude";
 export type InstallmentFilter = "all" | "only" | "exclude";
 
+// The three canonical budget buckets, in display order.
+export const BUCKET_OPTIONS = [
+  { label: "🔵 Custos Fixos", value: "custos_fixos" },
+  { label: "🟠 Conforto", value: "conforto" },
+  { label: "🟢 Liberdade Financeira", value: "liberdade_financeira" },
+];
+
 export interface TransactionFilters {
   search: string;
   viewMode: ViewMode;
   provisional: ProvisionalFilter;
   installment: InstallmentFilter;
+  bucket: string | null;
   categories: string[];
   amountMin: number | null;
   amountMax: number | null;
@@ -25,6 +33,7 @@ export const DEFAULT_FILTERS: TransactionFilters = {
   viewMode: "all",
   provisional: "all",
   installment: "all",
+  bucket: null,
   categories: [],
   amountMin: null,
   amountMax: null,
@@ -36,6 +45,7 @@ export function hasActiveFilters(f: TransactionFilters): boolean {
     f.viewMode !== "all" ||
     f.provisional !== "all" ||
     f.installment !== "all" ||
+    f.bucket !== null ||
     f.categories.length > 0 ||
     f.amountMin !== null ||
     f.amountMax !== null
@@ -49,6 +59,7 @@ export function applyTransactionFilters(tx: FlatTransaction[], f: TransactionFil
   else if (f.provisional === "exclude") result = result.filter((t) => !t.provisional);
   if (f.installment === "only") result = result.filter((t) => (t.totalInstallments ?? 0) >= 2);
   else if (f.installment === "exclude") result = result.filter((t) => (t.totalInstallments ?? 0) < 2);
+  if (f.bucket) result = result.filter((t) => t.bucket === f.bucket);
   if (f.categories.length > 0) {
     const set = new Set(f.categories);
     result = result.filter((t) => set.has(t.category));
@@ -79,6 +90,31 @@ export interface TransactionsFiltersProps {
 export function TransactionsFilters({ transactions, value, onChange, resultCount }: TransactionsFiltersProps) {
   const { token } = theme.useToken();
 
+  // Debounce the search box: typing updates a local value immediately (snappy
+  // input) but only pushes to the parent filter after a pause, so the heavy
+  // transactions table re-renders once per burst of typing instead of per key.
+  const [searchLocal, setSearchLocal] = useState(value.search);
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Keep the local box in sync when the filter is reset elsewhere (e.g. "Limpar filtros").
+  useEffect(() => {
+    setSearchLocal(value.search);
+  }, [value.search]);
+
+  useEffect(() => () => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+  }, []);
+
+  const onSearchChange = (next: string) => {
+    setSearchLocal(next);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      onChange({ ...valueRef.current, search: next });
+    }, 200);
+  };
+
   const categoryOptions = useMemo(() => {
     const cats = new Map<string, number>();
     for (const t of transactions) {
@@ -105,8 +141,8 @@ export function TransactionsFilters({ transactions, value, onChange, resultCount
           prefix={<Search size={14} color={token.colorTextSecondary} />}
           placeholder="Buscar transacoes..."
           allowClear
-          value={value.search}
-          onChange={(e) => set("search", e.target.value)}
+          value={searchLocal}
+          onChange={(e) => onSearchChange(e.target.value)}
           style={{ width: 300 }}
         />
         <Segmented
@@ -137,6 +173,15 @@ export function TransactionsFilters({ transactions, value, onChange, resultCount
             { label: "Parceladas", value: "only" },
             { label: "A vista", value: "exclude" },
           ]}
+        />
+        <Select
+          allowClear
+          placeholder="Filtrar por bucket..."
+          value={value.bucket}
+          onChange={(v) => set("bucket", v ?? null)}
+          options={BUCKET_OPTIONS}
+          style={{ minWidth: 190 }}
+          size="middle"
         />
         <Select
           mode="multiple"
