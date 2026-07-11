@@ -2,23 +2,25 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Card, Typography, Button, Table, Space, Form, Input, Select,
   DatePicker, Modal, message, Popconfirm, Statistic, Row, Col,
-  Segmented, Radio, Collapse, Tag, Checkbox,
+  Segmented, Radio, Collapse, Tag, Checkbox, Tooltip,
 } from "antd";
 import dayjs from "dayjs";
 import {
   PiggyBank, Plus, Edit, Trash2, FilterX, Table as TableIcon,
   Network, DollarSign, Save, FolderOpen, Copy, ArrowUp, ArrowDown,
   ChevronDown, ChevronUp, Star, Minus, BarChart3, LayoutDashboard,
-  Users, Building2, FileSpreadsheet, Settings,
+  Users, Building2, FileSpreadsheet, Settings, TriangleAlert, CircleCheck,
 } from "lucide-react";
 import { useRedact } from "@/context/RedactContext";
 import { useRegisterRefresh } from "@/context/RefreshContext";
 import { useInvestments } from "@/hooks/useInvestments";
 import type {
   Investment, FilteredInfo, ComparisonRow, DetailedComparisonRow,
+  AssessData, AssessItem, AssessBucket, Severity,
 } from "@/lib/investment-types";
 import {
   brokerOptions, productOptions, productOrder, isUSInvestment, formatBRL,
+  holdingKey,
 } from "@/lib/investment-types";
 import { MonthSelector } from "@/components/shared/MonthSelector";
 import { MarkdownView } from "@/components/shared/MarkdownView";
@@ -39,6 +41,14 @@ export default function InvestmentsPage() {
   const [summaryView, setSummaryView] = useState<"broker" | "product" | "holder">("broker");
   const [reports, setReports] = useState<Array<{ month: string; filename: string; title: string; content: string }>>([]);
   const [selectedReport, setSelectedReport] = useState<string>("");
+  const [assessments, setAssessments] = useState<AssessData[]>([]);
+  const [assessModal, setAssessModal] = useState<{ title: string; body: React.ReactNode } | null>(null);
+  useEffect(() => {
+    fetch("/api/assess")
+      .then((r) => r.json())
+      .then((d) => { if (Array.isArray(d)) setAssessments(d); })
+      .catch(() => {});
+  }, []);
   useEffect(() => {
     fetch("/api/reports")
       .then((r) => r.json())
@@ -80,12 +90,15 @@ export default function InvestmentsPage() {
   const [pendingImportData, setPendingImportData] = useState<Investment[]>([]);
 
   const refreshInvestments = useCallback(async () => {
-    const [invRes, repRes] = await Promise.all([
+    const [invRes, repRes, assRes] = await Promise.all([
       fetch("/api/investments"),
       fetch("/api/reports"),
+      fetch("/api/assess"),
     ]);
     const invData = await invRes.json();
     const repData = await repRes.json();
+    const assData = await assRes.json();
+    if (Array.isArray(assData)) setAssessments(assData);
     if (Array.isArray(invData)) {
       setInvestments(invData.map((r: Investment, i: number) => ({
         ...r,
@@ -121,6 +134,101 @@ export default function InvestmentsPage() {
     () => Array.from(new Set(investments.map((inv) => inv.nome))).sort(),
     [investments]
   );
+
+  // ── Assess lookups ──
+  const assessedMonths = useMemo(() => new Set(assessments.map((a) => a.month)), [assessments]);
+  const assessItemMap = useMemo(() => {
+    const m = new Map<string, AssessItem>();
+    for (const a of assessments) for (const it of a.items || []) {
+      m.set(`${a.month}||${holdingKey(it.broker, it.holder, it.type, it.product, it.nome)}`, it);
+    }
+    return m;
+  }, [assessments]);
+  // Per-bucket (product) rollup, derived from the per-item findings: worst severity + kinds seen.
+  const assessBucketMap = useMemo(() => {
+    const rank: Record<Severity, number> = { HIGH: 0, MEDIUM: 1, INFO: 2 };
+    const m = new Map<string, AssessBucket>();
+    for (const a of assessments) for (const it of a.items || []) {
+      const key = `${a.month}||${it.product}`;
+      const cur = m.get(key);
+      if (!cur) { m.set(key, { product: it.product, severity: it.severity, count: 1, message: it.kind }); continue; }
+      cur.count += 1;
+      if (rank[it.severity] < rank[cur.severity]) cur.severity = it.severity;
+      if (!cur.message.split(", ").includes(it.kind)) cur.message += `, ${it.kind}`;
+    }
+    return m;
+  }, [assessments]);
+  const assessByMonth = useMemo(() => new Map(assessments.map((a) => [a.month, a])), [assessments]);
+  const severityHex = (s: Severity) => (s === "HIGH" ? "#ff4d4f" : s === "MEDIUM" ? "#faad14" : "#1677ff");
+  const sevTag = (s: string) => <Tag color={s === "HIGH" ? "error" : s === "MEDIUM" ? "warning" : "processing"}>{s}</Tag>;
+
+  // A point of attention (item, bucket, or macro) opens a modal with the assess detail.
+  const openItemModal = (it: AssessItem) => setAssessModal({
+    title: `${it.product} — ${it.nome} (${it.holder})`,
+    body: <Space direction="vertical" size="small">{sevTag(it.severity)}<Typography.Text strong>{it.kind}</Typography.Text><Typography.Paragraph style={{ margin: 0 }}>{it.message}</Typography.Paragraph></Space>,
+  });
+  const openBucketModal = (month: string, product: string) => {
+    const a = assessByMonth.get(month);
+    const its = (a?.items || []).filter((it) => it.product === product);
+    const globals = a?.global || [];
+    setAssessModal({
+      title: `${product} · ${month}`,
+      body: <Space direction="vertical" size="small" style={{ width: "100%" }}>
+        {its.map((it, i) => <div key={i}>{sevTag(it.severity)} <Typography.Text strong>{it.nome}</Typography.Text> — {it.message}</div>)}
+        {globals.length > 0 && <div style={{ marginTop: 8 }}><Typography.Text type="secondary">Macro:</Typography.Text>{globals.map((g, i) => <div key={i}>{sevTag(g.severity)} {g.message}</div>)}</div>}
+      </Space>,
+    });
+  };
+  const openMacroModal = (month: string) => {
+    const a = assessByMonth.get(month);
+    if (!a) return;
+    const attn = (a.sections || []).filter((s) => s.status === "attention");
+    setAssessModal({
+      title: `Avaliação — ${month}`,
+      body: <Space direction="vertical" size="small" style={{ width: "100%" }}>
+        {a.summary && <Typography.Paragraph>{a.summary}</Typography.Paragraph>}
+        {(a.global || []).length > 0 && <><Typography.Text strong>Pontos macro</Typography.Text>{(a.global || []).map((g, i) => <div key={i}>{sevTag(g.severity)} {g.message}</div>)}</>}
+        {attn.length > 0 && <><Typography.Text strong style={{ marginTop: 8 }}>Áreas em atenção</Typography.Text>{attn.map((s, i) => <div key={i}><Tag color="warning">{s.area}</Tag> {s.verdict}</div>)}</>}
+        {(a.items || []).length > 0 && <><Typography.Text strong style={{ marginTop: 8 }}>Itens</Typography.Text>{(a.items || []).map((it, i) => <div key={i}>{sevTag(it.severity)} {it.product}/{it.nome} — {it.message}</div>)}</>}
+      </Space>,
+    });
+  };
+  const assessAttentionCount = (month: string) => {
+    const a = assessByMonth.get(month);
+    if (!a) return 0;
+    return (a.items?.length || 0) + (a.global?.length || 0) + (a.sections?.filter((s) => s.status === "attention").length || 0);
+  };
+
+  // Badge for a single item: warning (clickable → modal) if a finding exists, green check if the
+  // month was assessed and clean, muted dash if the month has no assess report at all.
+  const itemActionBadge = (month: string, broker: string, holder: string, type: string, product: string, nome: string) => {
+    if (!assessedMonths.has(month)) return <Tooltip title="Mês não avaliado"><Minus size={14} color="#bfbfbf" /></Tooltip>;
+    const it = assessItemMap.get(`${month}||${holdingKey(broker, holder, type, product, nome)}`);
+    if (!it) return <Tooltip title="Sem desvios"><CircleCheck size={16} color="#52c41a" /></Tooltip>;
+    return <Tooltip title={`[${it.kind}] clique para detalhes`}><span style={{ cursor: "pointer" }} onClick={() => openItemModal(it)}><TriangleAlert size={16} color={severityHex(it.severity)} /></span></Tooltip>;
+  };
+  // Bucket-level badge (Comparison view): rolls up a whole product for the given month.
+  const bucketActionBadge = (month: string | undefined, product: string) => {
+    if (!month || !assessedMonths.has(month)) return null;
+    const b = assessBucketMap.get(`${month}||${product}`);
+    if (!b) return <Tooltip title="Sem desvios"><CircleCheck size={16} color="#52c41a" /></Tooltip>;
+    return <Tooltip title={`${b.message} — clique para detalhes`}><span style={{ cursor: "pointer" }} onClick={() => openBucketModal(month, product)}><TriangleAlert size={16} color={severityHex(b.severity)} /></span></Tooltip>;
+  };
+  // Latest month among those being compared drives the Comparison-view badges.
+  const comparisonAssessMonth = useMemo(
+    () => [...comparisonMonths].sort().slice(-1)[0],
+    [comparisonMonths]
+  );
+
+  // Same holding in the immediately-previous snapshot month, matched on the FULL identity
+  // (broker+holder+type+product+nome). Variance is computed against this so (a) same-nome siblings
+  // don't collide (defense even if two rows share a nome) — and (b) a line absent last month reads as a change
+  // from 0 (e.g. Pending Release appearing) rather than jumping to some older month that still had it.
+  const previousMonthRow = (record: Investment): Investment | undefined => {
+    const pm = [...uniqueMonths].filter((m) => m < record.month_year).pop();
+    if (!pm) return undefined;
+    return investments.find((inv) => inv.month_year === pm && inv.nome === record.nome && inv.holder === record.holder && inv.broker === record.broker && inv.type === record.type && inv.product === record.product);
+  };
 
   // Default comparison to the latest 2 months once investments load
   useEffect(() => {
@@ -522,7 +630,7 @@ export default function InvestmentsPage() {
       onFilter: (value: FilterValue, record: Investment) => record.nome === String(value), filterSearch: true,
       render: (value: string, record: Investment) => {
         if (!showVariance) return value;
-        const prev = investments.filter((inv) => inv.month_year < record.month_year && inv.nome === record.nome && inv.holder === record.holder && inv.broker === record.broker);
+        const prev = investments.filter((inv) => inv.month_year < record.month_year && inv.nome === record.nome && inv.holder === record.holder && inv.broker === record.broker && inv.type === record.type && inv.product === record.product);
         return (<Space>{value}{prev.length === 0 && <Tag icon={<Star size={12} />} style={{ backgroundColor: "#531dab", color: "white", borderColor: "#531dab" }}>NEW</Tag>}</Space>);
       },
     },
@@ -532,7 +640,7 @@ export default function InvestmentsPage() {
       title: "Quantidade", dataIndex: "quantidade", key: "quantidade", align: "right" as const,
       render: (value: number, record: Investment) => {
         if (!showVariance) return value.toLocaleString();
-        const prev = investments.filter((inv) => inv.month_year < record.month_year && inv.nome === record.nome && inv.holder === record.holder && inv.broker === record.broker).sort((a, b) => b.month_year.localeCompare(a.month_year))[0];
+        const prev = previousMonthRow(record);
         const variance = prev ? value - prev.quantidade : value;
         return (<Space direction="vertical" size={0}><span>{value.toLocaleString()}</span>{prev ? (variance !== 0 ? <Typography.Text type={variance > 0 ? "success" : "danger"} style={{ fontSize: 11 }}>{variance > 0 ? <ArrowUp size={10} /> : <ArrowDown size={10} />}{Math.abs(variance).toLocaleString()} ({prev.quantidade.toLocaleString()})</Typography.Text> : <Typography.Text type="secondary" style={{ fontSize: 11 }}><Minus size={10} /> No change</Typography.Text>) : (variance !== 0 && <Typography.Text type="success" style={{ fontSize: 11 }}><ArrowUp size={10} />{Math.abs(variance).toLocaleString()}</Typography.Text>)}</Space>);
       },
@@ -542,13 +650,17 @@ export default function InvestmentsPage() {
       title: "Valor Atual", dataIndex: "valor_atual", key: "valor_atual", align: "right" as const,
       render: (value: number, record: Investment) => {
         if (!showVariance) return formatBRL(value);
-        const prev = investments.filter((inv) => inv.month_year < record.month_year && inv.nome === record.nome && inv.holder === record.holder && inv.broker === record.broker).sort((a, b) => b.month_year.localeCompare(a.month_year))[0];
+        const prev = previousMonthRow(record);
         const variance = prev ? value - prev.valor_atual : value;
         return (<Space direction="vertical" size={0}><span>{formatBRL(value)}</span>{prev ? (variance !== 0 ? <Typography.Text type={variance > 0 ? "success" : "danger"} style={{ fontSize: 11 }}>{variance > 0 ? <ArrowUp size={10} /> : <ArrowDown size={10} />}{formatBRL(Math.abs(variance))} ({formatBRL(prev.valor_atual)})</Typography.Text> : <Typography.Text type="secondary" style={{ fontSize: 11 }}><Minus size={10} /> No change</Typography.Text>) : (variance !== 0 && <Typography.Text type="success" style={{ fontSize: 11 }}><ArrowUp size={10} />{formatBRL(Math.abs(variance))}</Typography.Text>)}</Space>);
       },
       sorter: (a: Investment, b: Investment) => a.valor_atual - b.valor_atual,
     },
     { title: "Updated At", dataIndex: "updated_at", key: "updated_at", render: (v: string) => dayjs(v).format("YYYY-MM-DD HH:mm:ss"), sorter: (a: Investment, b: Investment) => a.updated_at.localeCompare(b.updated_at) },
+    {
+      title: "Ação", key: "assess_action", align: "center" as const, width: 64, fixed: "right" as const,
+      render: (_: unknown, record: Investment) => itemActionBadge(record.month_year, record.broker, record.holder, record.type, record.product, record.nome),
+    },
   ];
 
   // ── Section View (tree) ──
@@ -561,16 +673,44 @@ export default function InvestmentsPage() {
     return filtered;
   };
 
+  // Identity of a holding across months (ignores the month itself).
+  const holdingId = (inv: Investment) => `${inv.broker}|${inv.holder}|${inv.type}|${inv.product}|${inv.nome}`;
+
+  // Holdings that existed in the month immediately preceding selectedMonth but are absent
+  // in selectedMonth, materialized as zero rows so the Section View surfaces the drop to zero.
+  const getDroppedInvestments = (present: Investment[]): Investment[] => {
+    const prevMonth = [...uniqueMonths].reverse().find((m) => m < selectedMonth);
+    if (!prevMonth) return [];
+    const presentIds = new Set(present.map(holdingId));
+    let prevItems = investments.filter((inv) => inv.month_year === prevMonth);
+    if (selectedHolder !== "all") prevItems = prevItems.filter((inv) => inv.holder === selectedHolder);
+    if (selectedBroker !== "all") prevItems = prevItems.filter((inv) => inv.broker === selectedBroker);
+    if (selectedType !== "all") prevItems = prevItems.filter((inv) => inv.type === selectedType);
+    return prevItems
+      .filter((inv) => !presentIds.has(holdingId(inv)))
+      .map((inv) => ({
+        ...inv,
+        key: `${inv.key}__dropped_${selectedMonth}`,
+        month_year: selectedMonth,
+        quantidade: 0,
+        valor_atual: 0,
+        quantidade_usd: undefined,
+        taxa_usd_brl: undefined,
+        isDropped: true,
+      }));
+  };
+
   const getGroupedByProduct = () => {
     const filtered = getFilteredInvestments();
-    const grouped = filtered.reduce((acc: Record<string, Investment[]>, inv) => {
+    const all = [...filtered, ...getDroppedInvestments(filtered)];
+    const grouped = all.reduce((acc: Record<string, Investment[]>, inv) => {
       if (!acc[inv.product]) acc[inv.product] = [];
       acc[inv.product].push(inv);
       return acc;
     }, {});
     return productOrder.map((product) => {
       const items = grouped[product] || [];
-      return { product, items, totalValue: items.reduce((s, inv) => s + inv.valor_atual, 0), count: items.length };
+      return { product, items, totalValue: items.reduce((s, inv) => s + inv.valor_atual, 0), count: items.filter((i) => !i.isDropped).length };
     });
   };
 
@@ -678,7 +818,7 @@ export default function InvestmentsPage() {
         </Typography.Text>
       );
     };
-    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left"; width?: number; align?: "right" | "center"; render?: (value: unknown, record: ComparisonRow) => React.ReactNode; onCell?: (record: ComparisonRow) => { rowSpan?: number; style?: React.CSSProperties }; sorter?: boolean | ((a: ComparisonRow, b: ComparisonRow) => number); sortOrder?: "ascend" | "descend" | null }> = [
+    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left" | "right"; width?: number; align?: "right" | "center"; render?: (value: unknown, record: ComparisonRow) => React.ReactNode; onCell?: (record: ComparisonRow) => { rowSpan?: number; style?: React.CSSProperties }; sorter?: boolean | ((a: ComparisonRow, b: ComparisonRow) => number); sortOrder?: "ascend" | "descend" | null }> = [
       {
         title: "Type", dataIndex: "type", key: "type", fixed: "left", width: 120,
         align: mergeTypeColumn ? "center" : undefined,
@@ -717,6 +857,10 @@ export default function InvestmentsPage() {
         });
       }
     });
+    columns.push({
+      title: `Ação · ${comparisonAssessMonth ?? ""}`, key: "assess_action", fixed: "right", width: 110, align: "center",
+      render: (_: unknown, record: ComparisonRow) => (record.isTotal || record.isSubtotal) ? null : bucketActionBadge(comparisonAssessMonth, String(record.product)),
+    });
     return columns;
   };
 
@@ -741,7 +885,7 @@ export default function InvestmentsPage() {
       return <Typography.Text type={color} strong={isAgg(record) || undefined}>{icon} {fmt(Math.abs(variance))}</Typography.Text>;
     };
 
-    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left"; width?: number; align?: "right"; render?: (value: unknown, record: DetailedComparisonRow) => React.ReactNode; sorter?: boolean; sortOrder?: "ascend" | "descend" | null }> = [
+    const columns: Array<{ title: string; dataIndex?: string; key: string; fixed?: "left" | "right"; width?: number; align?: "right" | "center"; render?: (value: unknown, record: DetailedComparisonRow) => React.ReactNode; sorter?: boolean; sortOrder?: "ascend" | "descend" | null }> = [
       { title: "Product", dataIndex: "product", key: "product", fixed: "left", width: 220, sorter: true, sortOrder: comparisonSortOrder("product"), render: (v: unknown, r: DetailedComparisonRow) => (r.isTotal || r.isSubtotal || r.isProductRow) ? <Typography.Text strong>{String(v)}</Typography.Text> : String(v) },
       { title: "Nome (Ticker)", dataIndex: "nome", key: "nome", fixed: "left", width: 180, render: (v: unknown) => String(v ?? "") },
     ];
@@ -762,6 +906,10 @@ export default function InvestmentsPage() {
         columns.push({ title: `Δ Qty ${month.substring(5)}→${next.substring(5)}`, key: `qty_variance_${index}`, align: "right", width: 120, sorter: true, sortOrder: comparisonSortOrder(`qty_variance_${index}`), render: (_: unknown, r: DetailedComparisonRow) => { if (isAgg(r)) return ""; return renderVariance(Number(r[`qty_${next}`] ?? 0) - Number(r[`qty_${curr}`] ?? 0), r, (v) => v.toLocaleString("pt-BR", { maximumFractionDigits: 4 })); } });
         columns.push({ title: `Δ ${month.substring(5)} → ${next.substring(5)}`, key: `variance_detailed_${index}`, align: "right", width: 130, sorter: true, sortOrder: comparisonSortOrder(`variance_detailed_${index}`), render: (_: unknown, r: DetailedComparisonRow) => renderVariance(Number(r[next] ?? 0) - Number(r[curr] ?? 0), r, formatBRL) });
       }
+    });
+    columns.push({
+      title: `Ação · ${comparisonAssessMonth ?? ""}`, key: "assess_action", fixed: "right", width: 110, align: "center",
+      render: (_: unknown, r: DetailedComparisonRow) => r.isProductRow ? bucketActionBadge(comparisonAssessMonth, String(r.product)) : null,
     });
     return columns;
   };
@@ -982,6 +1130,11 @@ export default function InvestmentsPage() {
                       <Space align="center" style={{ marginBottom: 8 }}>
                         <Typography.Title level={4} style={{ margin: 0 }}>Portfolio Summary</Typography.Title>
                         <Tag>{summary.latestMonth}</Tag>
+                        {assessAttentionCount(summary.latestMonth) > 0 && (
+                          <Tag color="warning" icon={<TriangleAlert size={12} />} style={{ cursor: "pointer" }} onClick={() => openMacroModal(summary.latestMonth)}>
+                            {assessAttentionCount(summary.latestMonth)} ponto(s) de atenção
+                          </Tag>
+                        )}
                         {summary.totalVariance !== null && !redacted && (
                           <Tag color={summary.totalVariance > 0 ? "green" : summary.totalVariance < 0 ? "red" : "default"} icon={summary.totalVariance > 0 ? <ArrowUp size={14} /> : summary.totalVariance < 0 ? <ArrowDown size={14} /> : <Minus size={14} />}>
                             {summary.variancePercent !== null && `${summary.variancePercent > 0 ? "+" : ""}${summary.variancePercent.toFixed(2)}%`}
@@ -1072,7 +1225,7 @@ export default function InvestmentsPage() {
                       <Segmented size="small" value={comparisonDetailMode} onChange={(v) => setComparisonDetailMode(v as "summary" | "detailed")} options={[{ label: "Summary", value: "summary" }, { label: "Detailed", value: "detailed" }]} />
                     </Space>
                   </Space>
-                  <Select mode="multiple" style={{ width: "100%" }} placeholder="Select months to compare" value={comparisonMonths} onChange={setComparisonMonths} options={uniqueMonthsForFilter.map((m) => ({ label: m, value: m }))} maxTagCount="responsive" />
+                  <Select mode="multiple" style={{ width: "100%" }} placeholder="Select months to compare" value={comparisonMonths} onChange={(vals) => setComparisonMonths([...(vals as string[])].sort())} options={uniqueMonthsForFilter.map((m) => ({ label: m, value: m }))} maxTagCount="responsive" />
                 </Space>
               </Card>
               {comparisonMonths.length > 0 ? (
@@ -1196,7 +1349,7 @@ export default function InvestmentsPage() {
                   return {
                     key: group.product,
                     label: (<Space style={{ width: "100%", justifyContent: "space-between" }}><Space><Typography.Text strong style={{ fontSize: 16 }}>{group.product}</Typography.Text><Typography.Text type="secondary">({group.count} investments)</Typography.Text></Space><Typography.Text strong style={{ fontSize: 16 }}>{formatBRL(group.totalValue)}</Typography.Text></Space>),
-                    children: group.items.length > 0 ? <Table columns={sectionColumns} dataSource={group.items} pagination={false} size="small" scroll={{ x: 1200 }} /> : <Typography.Text type="secondary">No investments for this period.</Typography.Text>,
+                    children: group.items.length > 0 ? <Table columns={sectionColumns} dataSource={group.items} pagination={false} size="small" scroll={{ x: 1200 }} rowClassName={(r: Investment) => r.isDropped ? "dropped-row" : ""} /> : <Typography.Text type="secondary">No investments for this period.</Typography.Text>,
                   };
                 })}
               />
@@ -1205,12 +1358,18 @@ export default function InvestmentsPage() {
         </Card>
       </Space>
 
+      <Modal open={!!assessModal} title={assessModal?.title} onCancel={() => setAssessModal(null)} footer={null} width={640}>
+        {assessModal?.body}
+      </Modal>
+
       <style jsx global>{`
         .total-row > td { background: rgba(24, 144, 255, 0.22) !important; font-weight: 700; }
         .total-row:hover > td { background: rgba(24, 144, 255, 0.3) !important; }
         .subtotal-row > td,
         .subtotal-row > td .ant-typography,
         .subtotal-row > td span { color: #1677ff !important; font-weight: 600; }
+        .dropped-row > td { background: rgba(255, 77, 79, 0.06) !important; }
+        .dropped-row:hover > td { background: rgba(255, 77, 79, 0.12) !important; }
       `}</style>
     </div>
   );
